@@ -236,7 +236,7 @@ Please open a GitHub issue before starting large refactors so we can align on di
 If this tool saves you time on your network shifts, a small tip is always appreciated ☕
 
 **Payoneer:** [payoneer.com/pay](https://www.payoneer.com/pay)  
-*(replace with your actual Payoneer payment link)*
+mesutbayrak at gmail dot com
 
 ---
 
