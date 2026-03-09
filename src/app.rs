@@ -246,6 +246,13 @@ impl App {
                             Err(e) => Err(e),
                         }
                     }
+                    RouterVendor::CitrixVpx => {
+                        let mut b = crate::router::citrix::CitrixVpxBackend::new(&router);
+                        match b.refresh().await {
+                            Ok(s) => { let r = b.get_routes().await.unwrap_or_default(); Ok((s, r)) }
+                            Err(e) => Err(e),
+                        }
+                    }
                 };
             match result {
                 Ok((summary, routes)) => {
@@ -373,6 +380,10 @@ impl App {
                 }
                 RouterVendor::Cisco => {
                     let b = crate::router::cisco::CiscoBackend::new(&router);
+                    b.fetch_route_map_detail(&rm_name).await
+                }
+                RouterVendor::CitrixVpx => {
+                    let b = crate::router::citrix::CitrixVpxBackend::new(&router);
                     b.fetch_route_map_detail(&rm_name).await
                 }
             };
@@ -586,8 +597,9 @@ pub fn apply_buf_to_draft(draft: &mut RouterConfig, field: usize, buf: &str) {
         3 => draft.username = buf.to_string(),
         4 => draft.password = if buf.is_empty() { None } else { Some(buf.to_string()) },
         5 => draft.vendor   = match buf.to_lowercase().as_str() {
-                 "vyos" => RouterVendor::VyOs,
-                 _      => RouterVendor::Cisco,
+                 "vyos"      => RouterVendor::VyOs,
+                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
+                 _           => RouterVendor::Cisco,
              },
         _ => {}
     }
@@ -622,8 +634,9 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             KeyCode::Char(' ') if app.editor_field == 5 => {
                 if let Some(draft) = app.editor_draft.as_mut() {
                     draft.vendor = match draft.vendor {
-                        RouterVendor::Cisco => RouterVendor::VyOs,
-                        RouterVendor::VyOs  => RouterVendor::Cisco,
+                        RouterVendor::Cisco     => RouterVendor::VyOs,
+                        RouterVendor::VyOs      => RouterVendor::CitrixVpx,
+                        RouterVendor::CitrixVpx => RouterVendor::Cisco,
                     };
                     app.editor_buf = draft.vendor.to_string();
                 }

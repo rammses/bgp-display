@@ -201,8 +201,9 @@ impl RouterDb {
             let id: uuid::Uuid = id_s.parse().unwrap_or_else(|_| uuid::Uuid::new_v4());
             let router_id = router_id_s.and_then(|s| s.parse().ok());
             let vendor = match vendor_s.to_lowercase().as_str() {
-                "vyos" => RouterVendor::VyOs,
-                _      => RouterVendor::Cisco,
+                "vyos"               => RouterVendor::VyOs,
+                "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
+                _                    => RouterVendor::Cisco,
             };
 
             routers.push(RouterConfig {

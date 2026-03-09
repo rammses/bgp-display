@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 pub mod cisco;
+pub mod citrix;
 pub mod vyos;
 
 // ─── Vendor ───────────────────────────────────────────────────────────────────
@@ -11,13 +12,15 @@ pub mod vyos;
 pub enum RouterVendor {
     Cisco,
     VyOs,
+    CitrixVpx,
 }
 
 impl std::fmt::Display for RouterVendor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RouterVendor::Cisco => write!(f, "Cisco"),
-            RouterVendor::VyOs  => write!(f, "VyOs"),
+            RouterVendor::Cisco     => write!(f, "Cisco"),
+            RouterVendor::VyOs      => write!(f, "VyOs"),
+            RouterVendor::CitrixVpx => write!(f, "CitrixVpx"),
         }
     }
 }
@@ -82,49 +85,56 @@ impl std::fmt::Display for ConnectionStatus {
 pub enum RouterBackend {
     Cisco(cisco::CiscoBackend),
     VyOs(vyos::VyOsBackend),
+    CitrixVpx(citrix::CitrixVpxBackend),
 }
 
 #[allow(dead_code)]
 impl RouterBackend {
     pub fn status(&self) -> &ConnectionStatus {
         match self {
-            RouterBackend::Cisco(b) => b.status(),
-            RouterBackend::VyOs(b)  => b.status(),
+            RouterBackend::Cisco(b)     => b.status(),
+            RouterBackend::VyOs(b)      => b.status(),
+            RouterBackend::CitrixVpx(b) => b.status(),
         }
     }
 
     pub async fn connect(&mut self) -> anyhow::Result<()> {
         match self {
-            RouterBackend::Cisco(b) => b.connect().await,
-            RouterBackend::VyOs(b)  => b.connect().await,
+            RouterBackend::Cisco(b)     => b.connect().await,
+            RouterBackend::VyOs(b)      => b.connect().await,
+            RouterBackend::CitrixVpx(b) => b.connect().await,
         }
     }
 
     pub async fn disconnect(&mut self) -> anyhow::Result<()> {
         match self {
-            RouterBackend::Cisco(b) => b.disconnect().await,
-            RouterBackend::VyOs(b)  => b.disconnect().await,
+            RouterBackend::Cisco(b)     => b.disconnect().await,
+            RouterBackend::VyOs(b)      => b.disconnect().await,
+            RouterBackend::CitrixVpx(b) => b.disconnect().await,
         }
     }
 
     pub async fn refresh(&mut self) -> anyhow::Result<crate::bgp::BgpSummary> {
         match self {
-            RouterBackend::Cisco(b) => b.refresh().await,
-            RouterBackend::VyOs(b)  => b.refresh().await,
+            RouterBackend::Cisco(b)     => b.refresh().await,
+            RouterBackend::VyOs(b)      => b.refresh().await,
+            RouterBackend::CitrixVpx(b) => b.refresh().await,
         }
     }
 
     pub async fn get_routes(&mut self) -> anyhow::Result<Vec<crate::bgp::BgpRoute>> {
         match self {
-            RouterBackend::Cisco(b) => b.get_routes().await,
-            RouterBackend::VyOs(b)  => b.get_routes().await,
+            RouterBackend::Cisco(b)     => b.get_routes().await,
+            RouterBackend::VyOs(b)      => b.get_routes().await,
+            RouterBackend::CitrixVpx(b) => b.get_routes().await,
         }
     }
 
     pub async fn apply_config(&mut self, config: &str) -> anyhow::Result<()> {
         match self {
-            RouterBackend::Cisco(b) => b.apply_config(config).await,
-            RouterBackend::VyOs(b)  => b.apply_config(config).await,
+            RouterBackend::Cisco(b)     => b.apply_config(config).await,
+            RouterBackend::VyOs(b)      => b.apply_config(config).await,
+            RouterBackend::CitrixVpx(b) => b.apply_config(config).await,
         }
     }
 }
