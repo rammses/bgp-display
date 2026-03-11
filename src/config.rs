@@ -1,4 +1,4 @@
-use crate::{db::RouterDb, router::RouterConfig};
+use crate::{db::RouterDb, router::{Project, RouterConfig}};
 use anyhow::Result;
 
 // ─── In-memory Application Config ────────────────────────────────────────────
@@ -8,7 +8,8 @@ use anyhow::Result;
 
 #[derive(Debug, Clone, Default)]
 pub struct AppConfig {
-    pub routers: Vec<RouterConfig>,
+    pub routers:  Vec<RouterConfig>,
+    pub projects: Vec<Project>,
 }
 
 impl AppConfig {
@@ -16,7 +17,8 @@ impl AppConfig {
     /// On first run the DB is created and seeded with default routers.
     pub fn load_with_key(passphrase: &str) -> Result<(Self, RouterDb)> {
         let db = RouterDb::open(passphrase)?;
-        let routers = db.load_all()?;
-        Ok((Self { routers }, db))
+        let routers  = db.load_all()?;
+        let projects = db.load_projects()?;
+        Ok((Self { routers, projects }, db))
     }
 }

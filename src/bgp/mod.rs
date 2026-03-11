@@ -54,7 +54,7 @@ impl std::fmt::Display for BgpState {
 
 // ─── Route Origin ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RouteOrigin {
     Igp,        // i  – originated via IGP
     Egp,        // e  – originated via EGP
@@ -73,7 +73,7 @@ impl std::fmt::Display for RouteOrigin {
 
 // ─── Route Status Flags ───────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum RouteStatus {
     BestExternal, // *>
     Best,         // >
@@ -98,7 +98,7 @@ impl std::fmt::Display for RouteStatus {
 
 // ─── BGP Peer ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BgpPeer {
     pub neighbor_ip:            IpAddr,
     pub remote_as:              u32,
@@ -129,7 +129,7 @@ impl BgpPeer {
 
 // ─── BGP Route ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BgpRoute {
     pub status:      RouteStatus,
     pub network:     String,   // CIDR, e.g. "10.0.0.0/8"
@@ -165,6 +165,16 @@ pub struct BgpSummary {
     pub table_version:  u64,
     pub peers:          Vec<BgpPeer>,
     pub fetched_at:     DateTime<Utc>,
+}
+
+impl BgpSummary {
+    /// Content-equal comparison ignoring `fetched_at` timestamp.
+    pub fn content_eq(&self, other: &Self) -> bool {
+        self.router_id == other.router_id
+            && self.local_as == other.local_as
+            && self.table_version == other.table_version
+            && self.peers == other.peers
+    }
 }
 
 impl BgpSummary {
@@ -212,9 +222,10 @@ pub fn parse_cisco_bgp_summary(
     let mut peers: Vec<BgpPeer> = Vec::new();
     let mut table_version = 0u64;
 
-    // Regex: Neighbor V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd
+    // Regex: Neighbor V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd [PfxSnt] [Desc]
+    // The PfxSnt column is present in newer FRR versions.
     let row_re = regex::Regex::new(
-        r"^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+\d+\s+\d+\s+(\S+)\s+(\S+)",
+        r"^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(\d+))?",
     )
     .unwrap();
     let tv_re = regex::Regex::new(r"table version is (\d+)").unwrap();
@@ -239,6 +250,10 @@ pub fn parse_cisco_bgp_summary(
                 (BgpState::from_str(state_pfx), 0)
             };
 
+            let prefixes_advertised: u64 = cap.get(7)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0);
+
             peers.push(BgpPeer {
                 neighbor_ip,
                 remote_as,
@@ -246,7 +261,7 @@ pub fn parse_cisco_bgp_summary(
                 state,
                 uptime: Some(uptime),
                 prefixes_received,
-                prefixes_advertised: 0,
+                prefixes_advertised,
                 description: None,
                 update_source: None,
                 next_hop_self: false,

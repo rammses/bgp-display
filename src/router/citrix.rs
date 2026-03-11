@@ -1,24 +1,19 @@
 // Citrix ADC / VPX SSH backend.
 //
-// Citrix ADC (formerly NetScaler) VPX runs FRRouting (FRR) for BGP.
-// There is no REST/NITRO API for the routing table, so we SSH into the
-// appliance and invoke `vtysh -c '...'` directly.
+// Citrix ADC (formerly NetScaler) NS14.x runs FRRouting (FRR) for BGP.
+// SSH drops into the NetScaler CLI ("> " prompt).  `vtysh` is invoked
+// directly from the NetScaler CLI (NOT via `shell`) — it opens an
+// interactive FRR/Cisco-style CLI.  `vtysh -c` is NOT supported on this
+// version.
 //
-// Access notes:
-//   • Default admin user is typically `nsroot`.
-//   • SSH drops you into the NetScaler CLI shell.  `vtysh` is available at
-//     `/usr/local/sbin/vtysh` (added to PATH for nsroot sessions).
-//   • Key-based auth is recommended (BatchMode=yes).
-//   • All FRR commands follow standard FRR/vtysh syntax — the same parsers
-//     from cisco.rs are reused directly.
+// Session flow:
+//   SSH login  →  NetScaler CLI ("> ")  →  vtysh  →  router# prompt
+//   run IOS-style commands (show ip bgp summary, etc.)
+//   exit  →  back to NetScaler CLI  →  exit
 //
-// FRR commands used:
-//   show bgp summary           – peer table + router-id / local-as
-//   show bgp neighbors <ip>    – per-peer detail (description, route-maps …)
-//   show bgp                   – full BGP RIB
-//   show route-map <name>      – route-map entries
-//   show ip prefix-list <name> – prefix-list entries
-//   show ip community-list <name> – community-list entries
+// FRR commands use FRR style (show bgp ...) rather than IOS style
+// (show ip bgp ...) — the IOS variants do not work on Citrix's vtysh.
+// The same parsers from cisco.rs are reused for output parsing.
 
 #![allow(dead_code)]
 
@@ -63,27 +58,52 @@ impl CitrixVpxBackend {
         &self.status
     }
 
+    // ── SSH argument builder ─────────────────────────────────────────────────
+    //
+    // Returns the ssh command string portion (including sshpass if password
+    // is set) for embedding in shell pipelines.
+
+    fn ssh_cmd_str(&self) -> String {
+        let target = format!("{}@{}", self.username, self.hostname);
+        let base_args = format!(
+            "-p {} -T -o ConnectTimeout=5 -o StrictHostKeyChecking=accept-new -o LogLevel=ERROR \
+             -o ControlMaster=auto -o ControlPath={} -o ControlPersist=600",
+            self.port, crate::router::SSH_MUX_CONTROL_PATH
+        );
+        if self.password.is_some() {
+            format!(
+                "sshpass -e ssh {} -o PreferredAuthentications=password,keyboard-interactive {}",
+                base_args, target
+            )
+        } else {
+            format!("ssh {} -o BatchMode=yes {}", base_args, target)
+        }
+    }
+
     // ── Raw SSH helper ────────────────────────────────────────────────────────
     //
-    // Executes a single shell command on the remote host via the system `ssh`
-    // binary.  No libssh2 dependency — requires key-based auth (SSH agent or
-    // ~/.ssh/id_* configured on the host running this process).
+    // Runs a FreeBSD shell command on Citrix ADC.  Uses a shell pipeline
+    // with a built-in `sleep` to ensure the `shell` sub-command is processed
+    // before the actual command is sent.
 
     async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
-        let target = format!("{}@{}", self.username, self.hostname);
+        let ssh_part = self.ssh_cmd_str();
+        // Escape single quotes in the command for safe shell embedding
+        let escaped_cmd = shell_cmd.replace('\'', "'\\''");
+        let script = format!(
+            "{{ printf 'shell\\n'; sleep 1; printf '{}\\nexit\\nexit\\n'; }} | {}",
+            escaped_cmd, ssh_part
+        );
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(&script);
+        if let Some(ref pw) = self.password {
+            cmd.env("SSHPASS", pw);
+        }
+
         let output = tokio::time::timeout(
             Duration::from_secs(15),
-            Command::new("ssh")
-                .args([
-                    "-p", &self.port.to_string(),
-                    "-o", "ConnectTimeout=5",
-                    "-o", "BatchMode=yes",
-                    "-o", "StrictHostKeyChecking=accept-new",
-                    "-o", "LogLevel=ERROR",
-                    &target,
-                    shell_cmd,
-                ])
-                .output(),
+            cmd.output(),
         )
         .await
         .map_err(|_| anyhow::anyhow!("SSH timed out connecting to {}", self.hostname))??;
@@ -93,20 +113,133 @@ impl CitrixVpxBackend {
             bail!("SSH error: {}", err.trim());
         }
 
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
+        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(Self::strip_citrix_noise(&raw))
+    }
+
+    // ── Strip Citrix ADC banner / warning / shell noise ──────────────────────
+    //
+    // Removes:
+    //   • SSH login banner (### lines, WARNING, Disconnect IMMEDIATELY)
+    //   • Warning: [ ... ] blocks (RPC default password warnings)
+    //   • " Done" lines following warnings
+    //   • NetScaler CLI prompts (lines starting with "> ")
+    //   • Shell prompts (root@ns# ...)
+    //   • The "shell" and "exit" echo lines
+
+    fn strip_citrix_noise(raw: &str) -> String {
+        let mut lines: Vec<&str> = Vec::new();
+        let mut in_warning_block = false;
+
+        for line in raw.lines() {
+            let t = line.trim();
+
+            // Skip the "Warning: [" opener (possibly with text after it)
+            if t.starts_with("Warning:") && t.contains('[') {
+                in_warning_block = true;
+                continue;
+            }
+
+            // Inside a Warning block, skip until the closing "]"
+            if in_warning_block {
+                if t.contains(']') {
+                    in_warning_block = false;
+                }
+                continue;
+            }
+
+            // Skip standalone " Done" line that follows the warning block
+            if t == "Done" || t == "Done." {
+                continue;
+            }
+
+            // Skip "Bye!" logout message
+            if t == "Bye!" {
+                continue;
+            }
+
+            // Skip SSH banner lines
+            if t.starts_with("###")
+                || t.starts_with("WARNING:")
+                || t.starts_with("Disconnect IMMEDIATELY")
+                || (t.starts_with('#') && t.ends_with('#'))
+            {
+                continue;
+            }
+
+            // Skip NetScaler CLI prompt lines
+            if t.starts_with("> ") || t == ">" {
+                continue;
+            }
+
+            // Skip shell prompts (root@ns# or similar)
+            if t.contains('@') && t.contains('#') && t.len() < 80
+                && !t.contains("BGP")
+            {
+                continue;
+            }
+
+            // Skip our own piped commands echoed back
+            if t == "shell" || t == "exit" || t == "vtysh" {
+                continue;
+            }
+
+            // Skip vtysh banner ("Hello, this is FRRouting" etc.)
+            if t.starts_with("Hello, this is") || t.starts_with("FRRouting") {
+                continue;
+            }
+
+            // Skip vtysh/Cisco-style prompts (e.g. "ns#", "router#", "ns>")
+            if (t.ends_with('#') || t.ends_with('>')) && !t.contains(' ') && t.len() < 60 {
+                continue;
+            }
+
+            lines.push(line);
+        }
+
+        lines.join("\n")
     }
 
     // ── vtysh helper ──────────────────────────────────────────────────────────
     //
-    // Wraps an FRR operational command in `vtysh -c '...'`.
-    // On Citrix VPX vtysh lives at /usr/local/sbin/vtysh and is on the PATH
-    // for the nsroot user.  Single-quotes inside the command are escaped with
-    // the standard shell '\'' trick.
+    // Citrix ADC NS14.x: `vtysh` is invoked directly from the NetScaler CLI.
+    // `vtysh -c` is NOT supported — we must enter vtysh interactively, run
+    // the IOS-style command, then exit.
+    //
+    // We use a shell pipeline with a built-in `sleep` between writing `vtysh`
+    // and the FRR command so the NetScaler CLI has time to hand off stdin to
+    // the vtysh process:
+    //   { printf 'vtysh\n'; sleep 1; printf '<cmd>\nexit\nexit\n'; } | ssh ...
 
     async fn vtysh_run(&self, frr_cmd: &str) -> Result<String> {
-        let escaped = frr_cmd.replace('\'', "'\\''");
-        let shell_cmd = format!("vtysh -c '{escaped}'");
-        self.raw_ssh_run(&shell_cmd).await
+        let ssh_part = self.ssh_cmd_str();
+        // Escape single quotes in the FRR command for safe shell embedding
+        let escaped_cmd = frr_cmd.replace('\'', "'\\''");
+        let script = format!(
+            "{{ printf 'vtysh\\n'; sleep 1; printf '{}\\nexit\\nexit\\n'; }} | {}",
+            escaped_cmd, ssh_part
+        );
+
+        let mut cmd = Command::new("sh");
+        cmd.arg("-c").arg(&script);
+        if let Some(ref pw) = self.password {
+            cmd.env("SSHPASS", pw);
+        }
+
+        let output = tokio::time::timeout(
+            Duration::from_secs(15),
+            cmd.output(),
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("SSH timed out connecting to {}", self.hostname))??;
+
+        if !output.status.success() && output.stdout.is_empty() {
+            let err = String::from_utf8_lossy(&output.stderr).to_string();
+            bail!("SSH error: {}", err.trim());
+        }
+
+        let raw = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(Self::strip_citrix_noise(&raw))
     }
 
     // ── connect ───────────────────────────────────────────────────────────────
@@ -114,9 +247,15 @@ impl CitrixVpxBackend {
     pub async fn connect(&mut self) -> Result<()> {
         self.status = ConnectionStatus::Connecting;
         match self.raw_ssh_run("echo ok").await {
-            Ok(_) => {
-                self.status = ConnectionStatus::Connected;
-                Ok(())
+            Ok(out) => {
+                if out.contains("ok") || out.contains("Done") || !out.is_empty() {
+                    self.status = ConnectionStatus::Connected;
+                    Ok(())
+                } else {
+                    let msg = "SSH connected but got no output".to_string();
+                    self.status = ConnectionStatus::Error(msg.clone());
+                    bail!("{}", msg);
+                }
             }
             Err(e) => {
                 self.status = ConnectionStatus::Error(e.to_string());
@@ -134,16 +273,16 @@ impl CitrixVpxBackend {
 
     // ── refresh ───────────────────────────────────────────────────────────────
     //
-    // Citrix VPX / FRR: try `show bgp ipv4 unicast summary` first (newer FRR),
-    // then fall back to `show bgp summary` and finally `show ip bgp summary`.
+    // Citrix ADC NS14.x vtysh uses FRR-style commands.
+    // Try `show bgp summary` first (FRR style), then fall back to alternatives.
 
     pub async fn refresh(&mut self) -> Result<BgpSummary> {
         let raw = {
-            let r1 = self.vtysh_run("show bgp ipv4 unicast summary").await;
+            let r1 = self.vtysh_run("show bgp summary").await;
             if r1.as_ref().is_ok_and(|s| s.contains("BGP router identifier")) {
                 r1?
             } else {
-                let r2 = self.vtysh_run("show bgp summary").await;
+                let r2 = self.vtysh_run("show bgp ipv4 unicast summary").await;
                 if r2.as_ref().is_ok_and(|s| s.contains("BGP router identifier")) {
                     r2?
                 } else {
@@ -164,12 +303,27 @@ impl CitrixVpxBackend {
         self.local_as  = summary.local_as;
         self.status    = ConnectionStatus::Connected;
 
-        // Fetch per-neighbour detail (description, route-maps)
+        // Fetch per-neighbour detail (description, route-maps) in parallel
         let ips: Vec<IpAddr> = summary.peers.iter().map(|p| p.neighbor_ip).collect();
+        let this = &*self; // shared ref for parallel fetches
+        let detail_futs: Vec<_> = ips.iter().map(|&ip| {
+            async move {
+                let cmd = format!("show bgp neighbors {ip}");
+                let r1 = this.vtysh_run(&cmd).await;
+                let raw = if r1.as_ref().is_ok_and(|s| s.contains("BGP neighbor is")) {
+                    r1
+                } else {
+                    let cmd2 = format!("show ip bgp neighbors {ip}");
+                    this.vtysh_run(&cmd2).await
+                };
+                (ip, raw)
+            }
+        }).collect();
+        let detail_results = futures::future::join_all(detail_futs).await;
         let mut detail_map = HashMap::new();
-        for ip in &ips {
-            if let Ok(detail) = self.fetch_neighbor_detail(*ip).await {
-                detail_map.insert(*ip, detail);
+        for (ip, result) in detail_results {
+            if let Ok(raw) = result {
+                detail_map.insert(ip, parse_neighbor_detail(&raw));
             }
         }
 
@@ -268,18 +422,41 @@ impl CitrixVpxBackend {
         }
 
         let mut prefix_lists: HashMap<String, Vec<PrefixListEntry>> = HashMap::new();
-        for name in &plist_names {
+        let mut community_lists: HashMap<String, Vec<String>> = HashMap::new();
+
+        // Fetch all prefix-lists and community-lists in parallel
+        let plist_futs: Vec<_> = plist_names.iter().map(|name| {
             let cmd2 = format!("show ip prefix-list {name}");
-            if let Ok(pl_raw) = self.vtysh_run(&cmd2).await {
-                prefix_lists.insert(name.clone(), parse_prefix_list_entries(&pl_raw));
+            let name = name.clone();
+            async move {
+                let result = self.vtysh_run(&cmd2).await;
+                (name, result)
+            }
+        }).collect();
+
+        let clist_futs: Vec<_> = clist_names.iter().map(|name| {
+            let cmd3 = format!("show ip community-list {name}");
+            let name = name.clone();
+            async move {
+                let result = self.vtysh_run(&cmd3).await;
+                (name, result)
+            }
+        }).collect();
+
+        let (plist_results, clist_results) = futures::future::join(
+            futures::future::join_all(plist_futs),
+            futures::future::join_all(clist_futs),
+        ).await;
+
+        for (name, result) in plist_results {
+            if let Ok(pl_raw) = result {
+                prefix_lists.insert(name, parse_prefix_list_entries(&pl_raw));
             }
         }
 
-        let mut community_lists: HashMap<String, Vec<String>> = HashMap::new();
-        for name in &clist_names {
-            let cmd3 = format!("show ip community-list {name}");
-            if let Ok(cl_raw) = self.vtysh_run(&cmd3).await {
-                community_lists.insert(name.clone(), parse_community_list_entries(&cl_raw));
+        for (name, result) in clist_results {
+            if let Ok(cl_raw) = result {
+                community_lists.insert(name, parse_community_list_entries(&cl_raw));
             }
         }
 

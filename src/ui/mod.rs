@@ -3,6 +3,7 @@ pub mod conn_log;
 pub mod dashboard;
 pub mod logs;
 pub mod peers;
+pub mod project_popup;
 pub mod router_editor;
 pub mod routes;
 
@@ -46,6 +47,11 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     draw_tabs(f, app, chunks[1]);
     draw_content(f, app, chunks[2]);
     draw_help(f, app, chunks[3]);
+
+    // Project popup overlay
+    if app.project_popup {
+        project_popup::draw(f, app);
+    }
 }
 
 // ─── Title bar ────────────────────────────────────────────────────────────────
@@ -74,6 +80,13 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
     let title = Line::from(vec![
         Span::styled(" BGP Link Manager ", title_style),
         Span::styled("v0.1.0", right_style),
+        Span::raw("  "),
+        Span::styled(
+            app.active_project_name()
+                .map(|n| format!("[{n}]"))
+                .unwrap_or_else(|| "[All Routers]".into()),
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+        ),
         Span::raw("  "),
         Span::styled(&as_info, Style::default().fg(C_HEADER)),
         Span::raw("  "),
@@ -164,6 +177,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         ("Tab", "Switch"),
         ("↑↓/jk", "Navigate"),
         ("r/F5", "Refresh"),
+        ("p", "Projects"),
         ("1-7", "Jump tab"),
     ];
 

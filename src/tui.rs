@@ -20,7 +20,14 @@ pub async fn run_tui(app: &mut App) -> Result<()> {
     app.set_event_tx(events.sender());
     app.spawn_ping();           // initial reachability probe
     app.spawn_bgp_fetch_selected(); // immediate BGP fetch for selected router
+    // Pre-fetch BGP data for all routers so switching is instant
+    for router in app.routers.clone() {
+        app.spawn_bgp_fetch_for(router);
+    }
     let result     = run_loop(&mut term, app, &mut events).await;
+
+    // Gracefully close persistent SSH master connections
+    crate::router::cleanup_ssh_sessions(&app.all_routers).await;
 
     // Always restore terminal even on error
     disable_raw_mode()?;

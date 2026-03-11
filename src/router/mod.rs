@@ -4,7 +4,41 @@ use uuid::Uuid;
 
 pub mod cisco;
 pub mod citrix;
+pub mod pfsense;
 pub mod vyos;
+
+// ─── SSH multiplexing ─────────────────────────────────────────────────────────
+//
+// All backends share a ControlMaster socket so that the first SSH connection
+// to a router sets up a persistent master, and every subsequent command
+// reuses it without re-authenticating.  The master auto-closes 10 minutes
+// after the last client disconnects (ControlPersist=600).
+//
+// %C is an OpenSSH token that expands to a hash of %l%h%p%r, guaranteeing
+// a unique socket path per user@host:port combination.
+
+/// Socket path pattern for SSH ControlMaster (uses OpenSSH %C token).
+pub const SSH_MUX_CONTROL_PATH: &str = "/tmp/bgp-lm-%C";
+
+/// Gracefully close all SSH master connections for the given routers.
+pub async fn cleanup_ssh_sessions(routers: &[RouterConfig]) {
+    let control_path_arg = format!("ControlPath={}", SSH_MUX_CONTROL_PATH);
+    for router in routers {
+        let target = format!("{}@{}", router.username, router.hostname);
+        let port = router.ssh_port.to_string();
+        let _ = tokio::process::Command::new("ssh")
+            .args([
+                "-O", "exit",
+                "-p", &port,
+                "-o", &control_path_arg,
+                &target,
+            ])
+            .stderr(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .output()
+            .await;
+    }
+}
 
 // ─── Vendor ───────────────────────────────────────────────────────────────────
 
@@ -13,6 +47,7 @@ pub enum RouterVendor {
     Cisco,
     VyOs,
     CitrixVpx,
+    PfSense,
 }
 
 impl std::fmt::Display for RouterVendor {
@@ -21,6 +56,7 @@ impl std::fmt::Display for RouterVendor {
             RouterVendor::Cisco     => write!(f, "Cisco"),
             RouterVendor::VyOs      => write!(f, "VyOs"),
             RouterVendor::CitrixVpx => write!(f, "CitrixVpx"),
+            RouterVendor::PfSense   => write!(f, "PfSense"),
         }
     }
 }
@@ -57,6 +93,25 @@ impl Default for RouterConfig {
     }
 }
 
+// ─── Project ──────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id:         Uuid,
+    pub name:       String,
+    pub router_ids: Vec<Uuid>,
+}
+
+impl Project {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            id:         Uuid::new_v4(),
+            name:       name.into(),
+            router_ids: vec![],
+        }
+    }
+}
+
 // ─── Connection Status ────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +141,7 @@ pub enum RouterBackend {
     Cisco(cisco::CiscoBackend),
     VyOs(vyos::VyOsBackend),
     CitrixVpx(citrix::CitrixVpxBackend),
+    PfSense(pfsense::PfSenseBackend),
 }
 
 #[allow(dead_code)]
@@ -95,6 +151,7 @@ impl RouterBackend {
             RouterBackend::Cisco(b)     => b.status(),
             RouterBackend::VyOs(b)      => b.status(),
             RouterBackend::CitrixVpx(b) => b.status(),
+            RouterBackend::PfSense(b)   => b.status(),
         }
     }
 
@@ -103,6 +160,7 @@ impl RouterBackend {
             RouterBackend::Cisco(b)     => b.connect().await,
             RouterBackend::VyOs(b)      => b.connect().await,
             RouterBackend::CitrixVpx(b) => b.connect().await,
+            RouterBackend::PfSense(b)   => b.connect().await,
         }
     }
 
@@ -111,6 +169,7 @@ impl RouterBackend {
             RouterBackend::Cisco(b)     => b.disconnect().await,
             RouterBackend::VyOs(b)      => b.disconnect().await,
             RouterBackend::CitrixVpx(b) => b.disconnect().await,
+            RouterBackend::PfSense(b)   => b.disconnect().await,
         }
     }
 
@@ -119,6 +178,7 @@ impl RouterBackend {
             RouterBackend::Cisco(b)     => b.refresh().await,
             RouterBackend::VyOs(b)      => b.refresh().await,
             RouterBackend::CitrixVpx(b) => b.refresh().await,
+            RouterBackend::PfSense(b)   => b.refresh().await,
         }
     }
 
@@ -127,6 +187,7 @@ impl RouterBackend {
             RouterBackend::Cisco(b)     => b.get_routes().await,
             RouterBackend::VyOs(b)      => b.get_routes().await,
             RouterBackend::CitrixVpx(b) => b.get_routes().await,
+            RouterBackend::PfSense(b)   => b.get_routes().await,
         }
     }
 
@@ -135,6 +196,7 @@ impl RouterBackend {
             RouterBackend::Cisco(b)     => b.apply_config(config).await,
             RouterBackend::VyOs(b)      => b.apply_config(config).await,
             RouterBackend::CitrixVpx(b) => b.apply_config(config).await,
+            RouterBackend::PfSense(b)   => b.apply_config(config).await,
         }
     }
 }

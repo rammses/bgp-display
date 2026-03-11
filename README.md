@@ -1,4 +1,4 @@
-# bgp-link helper
+# bgp-link display
 
 > A terminal UI (TUI) for monitoring and managing BGP sessions on production routers — live over SSH, encrypted credentials, real-time state — all inside your terminal.
 
@@ -9,7 +9,7 @@
 ## Goal
 
 Network engineers spend a lot of time SSHing into routers, running `show ip bgp summary`, grepping through neighbour tables and cross-referencing route-maps with prefix-lists by hand.  
-**bgp-link helper** puts all of that in one place:
+**bgp-link display** puts all of that in one place:
 
 - Live BGP peer state for every router on a single screen
 - Navigate the full BGP RIB without leaving the TUI
@@ -35,16 +35,16 @@ Network engineers spend a lot of time SSHing into routers, running `show ip bgp 
 ### Build from source
 
 ```bash
-git clone https://github.com/yourname/bgp-link helper
-cd bgp-link helper
+git clone https://github.com/yourname/bgp-link display
+cd bgp-link display
 cargo build --release
-# binary lands at target/release/bgp-link helper
+# binary lands at target/release/bgp-link display
 ```
 
 Copy to somewhere on your `$PATH`:
 
 ```bash
-sudo cp target/release/bgp-link helper /usr/local/bin/bgp-lm
+sudo cp target/release/bgp-link display /usr/local/bin/bgp-lm
 ```
 
 ---
@@ -59,8 +59,8 @@ On first launch you are prompted for an **encryption passphrase**.
 This passphrase protects the router credential database stored at:
 
 ```
-~/Library/Application Support/bgp-link helper/routers.db   # macOS
-~/.local/share/bgp-link helper/routers.db                   # Linux
+~/Library/Application Support/bgp-link display/routers.db   # macOS
+~/.local/share/bgp-link display/routers.db                   # Linux
 ```
 
 > Passwords are encrypted with AES-256-GCM, key derived with Argon2id.  
@@ -166,8 +166,8 @@ Contributions are welcome — bug fixes, new vendor backends, parser improvement
 
 ```bash
 # Fork & clone
-git clone https://github.com/yourname/bgp-link helper
-cd bgp-link helper
+git clone https://github.com/yourname/bgp-link display
+cd bgp-link display
 
 # Create a feature branch
 git checkout -b feature/juniper-backend

@@ -14,13 +14,40 @@ use ratatui::{
 // ─── Config tab ───────────────────────────────────────────────────────────────
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
+    // If there's a pending update, split area to show notification banner
+    let (main_area, banner_area) = if app.has_pending_update {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(3), Constraint::Length(1)])
+            .split(area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (area, None)
+    };
+
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-        .split(area);
+        .split(main_area);
 
     draw_config_list(f, app, cols[0]);
     draw_right_panel(f, app, cols[1]);
+
+    // Draw pending-update notification banner
+    if let Some(banner) = banner_area {
+        let text = Line::from(vec![
+            Span::styled(" ● ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled("BGP data updated", Style::default().fg(Color::Yellow)),
+            Span::styled(" — press ", Style::default().fg(C_DIM)),
+            Span::styled("y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(" to apply, ", Style::default().fg(C_DIM)),
+            Span::styled("n", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(" to dismiss", Style::default().fg(C_DIM)),
+        ]);
+        let para = Paragraph::new(text)
+            .style(Style::default().bg(Color::DarkGray));
+        f.render_widget(para, banner);
+    }
 }
 
 // ─── Navigable BGP config list ────────────────────────────────────────────────
@@ -98,7 +125,7 @@ fn syntax_highlight(line: &str) -> Line<'static> {
 
 fn draw_right_panel(f: &mut Frame, app: &App, area: Rect) {
     if let Some(rm) = &app.config_routemap {
-        draw_routemap_detail(f, rm, area);
+        draw_routemap_detail(f, rm, area, app.routemap_detail_scroll);
     } else if let Some(name) = &app.config_rm_name {
         draw_loading_panel(f, name, area);
     } else {
@@ -108,7 +135,7 @@ fn draw_right_panel(f: &mut Frame, app: &App, area: Rect) {
 
 // ─── Route-map detail ─────────────────────────────────────────────────────────
 
-fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect) {
+fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect, scroll: u16) {
     let permit_sty  = Style::default().fg(C_ESTABLISHED).add_modifier(Modifier::BOLD);
     let deny_sty    = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
     let match_hdr   = Style::default().fg(Color::LightBlue).add_modifier(Modifier::UNDERLINED);
@@ -209,7 +236,8 @@ fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect) {
                 .border_style(Style::default().fg(C_BORDER))
                 .title(Span::styled(title, Style::default().fg(C_SELECTED))),
         )
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((scroll, 0));
     f.render_widget(para, area);
 }
 

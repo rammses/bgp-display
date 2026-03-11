@@ -54,15 +54,20 @@ impl CiscoBackend {
 
     async fn ssh_run(&self, cmd: &str) -> Result<String> {
         let target = format!("{}@{}", self.username, self.hostname);
+        let port_str = self.port.to_string();
+        let control_path_arg = format!("ControlPath={}", crate::router::SSH_MUX_CONTROL_PATH);
         let output = tokio::time::timeout(
             Duration::from_secs(15),
             Command::new("ssh")
                 .args([
-                    "-p", &self.port.to_string(),
+                    "-p", &port_str,
                     "-o", "ConnectTimeout=5",
                     "-o", "BatchMode=yes",
                     "-o", "StrictHostKeyChecking=accept-new",
                     "-o", "LogLevel=ERROR",
+                    "-o", "ControlMaster=auto",
+                    "-o", &control_path_arg,
+                    "-o", "ControlPersist=600",
                     &target,
                     cmd,
                 ])
@@ -132,12 +137,20 @@ impl CiscoBackend {
         self.status    = ConnectionStatus::Connected;
 
         // Fetch per-neighbour detail (description, route-maps) in parallel.
-        // We build the list of IPs up-front to avoid borrowing issues.
         let ips: Vec<IpAddr> = summary.peers.iter().map(|p| p.neighbor_ip).collect();
+        let this = &*self; // shared ref for parallel fetches
+        let detail_futs: Vec<_> = ips.iter().map(|&ip| {
+            let cmd = format!("show ip bgp neighbors {ip}");
+            async move {
+                let result = this.ssh_run_or_vtysh(&cmd, "BGP neighbor is").await;
+                (ip, result)
+            }
+        }).collect();
+        let detail_results = futures::future::join_all(detail_futs).await;
         let mut detail_map: HashMap<IpAddr, NeighborDetail> = HashMap::new();
-        for ip in &ips {
-            if let Ok(detail) = self.fetch_neighbor_detail(*ip).await {
-                detail_map.insert(*ip, detail);
+        for (ip, result) in detail_results {
+            if let Ok(raw) = result {
+                detail_map.insert(ip, parse_neighbor_detail(&raw));
             }
         }
 
@@ -212,19 +225,41 @@ impl CiscoBackend {
             }
         }
 
-        let mut prefix_lists: HashMap<String, Vec<PrefixListEntry>> = HashMap::new();
-        for name in &plist_names {
+        // Fetch all prefix-lists and community-lists in parallel
+        let plist_futs: Vec<_> = plist_names.iter().map(|name| {
             let cmd2 = format!("show ip prefix-list {name}");
-            if let Ok(pl_raw) = self.ssh_run_or_vtysh(&cmd2, "prefix-list").await {
-                prefix_lists.insert(name.clone(), parse_prefix_list_entries(&pl_raw));
+            let name = name.clone();
+            async move {
+                let result = self.ssh_run_or_vtysh(&cmd2, "prefix-list").await;
+                (name, result)
+            }
+        }).collect();
+
+        let clist_futs: Vec<_> = clist_names.iter().map(|name| {
+            let cmd3 = format!("show ip community-list {name}");
+            let name = name.clone();
+            async move {
+                let result = self.ssh_run_or_vtysh(&cmd3, "community-list").await;
+                (name, result)
+            }
+        }).collect();
+
+        let (plist_results, clist_results) = futures::future::join(
+            futures::future::join_all(plist_futs),
+            futures::future::join_all(clist_futs),
+        ).await;
+
+        let mut prefix_lists: HashMap<String, Vec<PrefixListEntry>> = HashMap::new();
+        for (name, result) in plist_results {
+            if let Ok(pl_raw) = result {
+                prefix_lists.insert(name, parse_prefix_list_entries(&pl_raw));
             }
         }
 
         let mut community_lists: HashMap<String, Vec<String>> = HashMap::new();
-        for name in &clist_names {
-            let cmd3 = format!("show ip community-list {name}");
-            if let Ok(cl_raw) = self.ssh_run_or_vtysh(&cmd3, "community-list").await {
-                community_lists.insert(name.clone(), parse_community_list_entries(&cl_raw));
+        for (name, result) in clist_results {
+            if let Ok(cl_raw) = result {
+                community_lists.insert(name, parse_community_list_entries(&cl_raw));
             }
         }
 
