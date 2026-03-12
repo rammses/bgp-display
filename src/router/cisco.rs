@@ -181,7 +181,20 @@ impl CiscoBackend {
 
         Ok(parse_bgp_table(&raw))
     }
+    // ── get_peer_routes ───────────────────────────────────────────────────────────────────
+    //
+    // Runs `show ip bgp neighbors <ip> routes`  (received)
+    // or   `show ip bgp neighbors <ip> advertised-routes`  (advertised)
 
+    pub async fn get_peer_routes(&self, ip: IpAddr, dir: crate::bgp::PeerRouteDirection) -> Result<Vec<BgpRoute>> {
+        use crate::bgp::PeerRouteDirection;
+        let cmd = match dir {
+            PeerRouteDirection::Received   => format!("show ip bgp neighbors {ip} routes"),
+            PeerRouteDirection::Advertised => format!("show ip bgp neighbors {ip} advertised-routes"),
+        };
+        let raw = self.ssh_run_or_vtysh(&cmd, "Network").await?;
+        Ok(parse_bgp_table(&raw))
+    }
     // ── fetch_neighbor_detail ─────────────────────────────────────────────────
 
     async fn fetch_neighbor_detail(&self, ip: IpAddr) -> Result<NeighborDetail> {

@@ -96,6 +96,29 @@ impl std::fmt::Display for RouteStatus {
     }
 }
 
+// ─── Per-peer route direction ──────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerRouteDirection {
+    Received,
+    Advertised,
+}
+
+impl PeerRouteDirection {
+    pub fn label(self) -> &'static str {
+        match self {
+            PeerRouteDirection::Received   => "Received",
+            PeerRouteDirection::Advertised => "Advertised",
+        }
+    }
+    pub fn toggle(self) -> Self {
+        match self {
+            PeerRouteDirection::Received   => PeerRouteDirection::Advertised,
+            PeerRouteDirection::Advertised => PeerRouteDirection::Received,
+        }
+    }
+}
+
 // ─── BGP Peer ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

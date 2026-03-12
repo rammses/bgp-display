@@ -7,6 +7,7 @@ use crate::{
 };
 use ratatui::widgets::{ListState, TableState};
 use std::collections::HashMap;
+use std::net::IpAddr;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -115,6 +116,15 @@ pub struct BgpCache {
     pub config:  String,
 }
 
+// ─── Per-peer route drill-down state ─────────────────────────────────────────
+
+pub struct PeerRouteView {
+    pub peer_ip:   IpAddr,
+    pub direction: crate::bgp::PeerRouteDirection,
+    pub routes:    Option<Vec<BgpRoute>>,
+    pub error:     Option<String>,
+}
+
 // ─── App State ────────────────────────────────────────────────────────────────
 
 pub struct App {
@@ -152,6 +162,10 @@ pub struct App {
     pub route_filter_mode: FilterMode,
     /// Indices into current_routes that pass the current filter (all when Off).
     pub route_indices:     Vec<usize>,
+
+    // Per-peer route drill-down (Peers tab)
+    pub peer_route_view:        Option<PeerRouteView>,
+    pub peer_route_table_state: TableState,
 
     // Rendered Cisco config stanza for Config tab
     pub rendered_config:   String,
@@ -230,6 +244,8 @@ impl App {
             route_filter:      String::new(),
             route_filter_mode: FilterMode::Off,
             route_indices:     vec![],
+            peer_route_view:        None,
+            peer_route_table_state: TableState::default(),
             rendered_config:   String::new(),
             config_lines:      vec![],
             config_list_state: ListState::default(),
@@ -351,6 +367,9 @@ impl App {
     }
 
     pub fn reload_selected_router(&mut self) {
+        // Close per-peer route drill-down on router switch
+        self.peer_route_view = None;
+        self.peer_route_table_state = TableState::default();
         // Clear any pending update since user is explicitly reloading/switching
         self.pending_bgp_update  = None;
         self.pending_route_update = None;
@@ -709,6 +728,109 @@ impl App {
         let msg = format!("{name}: BGP fetch failed — {err}");
         self.log(msg);
         self.router_status.insert(id, ConnectionStatus::Error(err));
+    }
+
+    // ── Per-peer route drill-down ─────────────────────────────────────────────
+
+    /// Open the per-peer route drill-down for the currently selected peer.
+    pub fn open_peer_route_view(&mut self, dir: crate::bgp::PeerRouteDirection) {
+        let ip = match self.peer_table_state.selected()
+            .and_then(|i| self.peer_indices.get(i))
+            .and_then(|&idx| self.current_peers.get(idx))
+        {
+            Some(p) => p.neighbor_ip,
+            None    => return,
+        };
+        self.peer_route_view = Some(PeerRouteView {
+            peer_ip:   ip,
+            direction: dir,
+            routes:    None,
+            error:     None,
+        });
+        self.peer_route_table_state = TableState::default();
+        self.spawn_peer_routes_fetch(ip, dir);
+        self.set_status(format!("Fetching {} routes for {}…", dir.label(), ip));
+    }
+
+    pub fn close_peer_route_view(&mut self) {
+        self.peer_route_view = None;
+        self.peer_route_table_state = TableState::default();
+    }
+
+    /// Toggle between Received and Advertised in the drill-down view.
+    pub fn toggle_peer_route_direction(&mut self) {
+        let (ip, dir) = match self.peer_route_view.as_mut() {
+            Some(view) => {
+                view.direction = view.direction.toggle();
+                view.routes    = None;
+                view.error     = None;
+                (view.peer_ip, view.direction)
+            }
+            None => return,
+        };
+        self.peer_route_table_state = TableState::default();
+        self.spawn_peer_routes_fetch(ip, dir);
+        self.set_status(format!("Fetching {} routes for {}…", dir.label(), ip));
+    }
+
+    /// Spawn a background SSH fetch for per-peer routes.
+    pub fn spawn_peer_routes_fetch(&self, ip: IpAddr, dir: crate::bgp::PeerRouteDirection) {
+        let Some(router) = self.selected_router().cloned() else { return };
+        let Some(tx)     = self.event_tx.clone() else { return };
+        tokio::spawn(async move {
+            let result = match router.vendor {
+                RouterVendor::Cisco => {
+                    let b = crate::router::cisco::CiscoBackend::new(&router);
+                    b.get_peer_routes(ip, dir).await
+                }
+                RouterVendor::VyOs => {
+                    let b = crate::router::vyos::VyOsBackend::new(&router);
+                    b.get_peer_routes(ip, dir).await
+                }
+                RouterVendor::CitrixVpx => {
+                    let b = crate::router::citrix::CitrixVpxBackend::new(&router);
+                    b.get_peer_routes(ip, dir).await
+                }
+                RouterVendor::PfSense => {
+                    let b = crate::router::pfsense::PfSenseBackend::new(&router);
+                    b.get_peer_routes(ip, dir).await
+                }
+            };
+            match result {
+                Ok(routes) => { let _ = tx.send(AppEvent::PeerRoutes(router.id, ip, dir, routes)); }
+                Err(e)     => { let _ = tx.send(AppEvent::PeerRoutesError(router.id, ip, dir, e.to_string())); }
+            }
+        });
+    }
+
+    /// Called when per-peer routes arrive from the background task.
+    pub fn handle_peer_routes(&mut self, _id: Uuid, ip: IpAddr, dir: crate::bgp::PeerRouteDirection, routes: Vec<BgpRoute>) {
+        let count = routes.len();
+        if let Some(view) = self.peer_route_view.as_mut() {
+            if view.peer_ip == ip && view.direction == dir {
+                view.routes = Some(routes);
+                view.error  = None;
+            } else {
+                return;
+            }
+        } else {
+            return;
+        }
+        if count > 0 {
+            self.peer_route_table_state.select(Some(0));
+        }
+        self.set_status(format!("{} {} routes for {}", count, dir.label().to_lowercase(), ip));
+    }
+
+    /// Called when a per-peer routes fetch fails.
+    pub fn handle_peer_routes_error(&mut self, _id: Uuid, ip: IpAddr, dir: crate::bgp::PeerRouteDirection, err: String) {
+        if let Some(view) = self.peer_route_view.as_mut() {
+            if view.peer_ip == ip && view.direction == dir {
+                view.error  = Some(err.clone());
+                view.routes = Some(vec![]);
+            }
+        }
+        self.log(format!("Peer routes error {ip}: {err}"));
     }
 
     pub fn log(&mut self, msg: impl Into<String>) {
@@ -1245,6 +1367,65 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         return;
     }
 
+    // ── Per-peer route drill-down: capture all input while view is open ───────
+    if app.peer_route_view.is_some() && app.current_tab == ActiveTab::Peers {
+        use crate::bgp::PeerRouteDirection;
+        match key.code {
+            KeyCode::Esc => { app.close_peer_route_view(); }
+            KeyCode::Char('i') => {
+                if app.peer_route_view.as_ref().map(|v| v.direction) != Some(PeerRouteDirection::Received) {
+                    app.toggle_peer_route_direction();
+                }
+            }
+            KeyCode::Char('o') => {
+                if app.peer_route_view.as_ref().map(|v| v.direction) != Some(PeerRouteDirection::Advertised) {
+                    app.toggle_peer_route_direction();
+                }
+            }
+            KeyCode::Tab => { app.toggle_peer_route_direction(); }
+            KeyCode::Char('r') | KeyCode::F(5) => {
+                let (ip, dir) = match app.peer_route_view.as_mut() {
+                    Some(view) => {
+                        view.routes = None;
+                        view.error  = None;
+                        (view.peer_ip, view.direction)
+                    }
+                    None => return,
+                };
+                app.spawn_peer_routes_fetch(ip, dir);
+                app.set_status(format!("Refreshing {} routes for {}…", dir.label(), ip));
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                let len = app.peer_route_view.as_ref()
+                    .and_then(|v| v.routes.as_ref())
+                    .map(|r: &Vec<BgpRoute>| r.len())
+                    .unwrap_or(0);
+                if len > 0 {
+                    let next = match app.peer_route_table_state.selected() {
+                        Some(0) | None => len - 1,
+                        Some(i)        => i - 1,
+                    };
+                    app.peer_route_table_state.select(Some(next));
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let len = app.peer_route_view.as_ref()
+                    .and_then(|v| v.routes.as_ref())
+                    .map(|r: &Vec<BgpRoute>| r.len())
+                    .unwrap_or(0);
+                if len > 0 {
+                    let next = match app.peer_route_table_state.selected() {
+                        Some(i) => (i + 1) % len,
+                        None    => 0,
+                    };
+                    app.peer_route_table_state.select(Some(next));
+                }
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Global quit
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) | (KeyCode::Char('Q'), _) => {
@@ -1357,6 +1538,17 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         }
         KeyCode::Enter if app.current_tab == ActiveTab::Routers => {
             app.editor_start_edit();
+        }
+
+        // ── Open per-peer route view (Peers tab) ─────────────────────────────
+        KeyCode::Enter if app.current_tab == ActiveTab::Peers => {
+            app.open_peer_route_view(crate::bgp::PeerRouteDirection::Received);
+        }
+        KeyCode::Char('i') if app.current_tab == ActiveTab::Peers => {
+            app.open_peer_route_view(crate::bgp::PeerRouteDirection::Received);
+        }
+        KeyCode::Char('o') if app.current_tab == ActiveTab::Peers => {
+            app.open_peer_route_view(crate::bgp::PeerRouteDirection::Advertised);
         }
 
         _ => {}

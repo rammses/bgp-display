@@ -269,7 +269,17 @@ impl VyOsBackend {
         }
         Ok(vec![])
     }
+    // ── get_peer_routes ───────────────────────────────────────────────────────────────────
 
+    pub async fn get_peer_routes(&self, ip: IpAddr, dir: crate::bgp::PeerRouteDirection) -> Result<Vec<BgpRoute>> {
+        use crate::bgp::PeerRouteDirection;
+        let cmd = match dir {
+            PeerRouteDirection::Received   => format!("show bgp neighbors {ip} routes"),
+            PeerRouteDirection::Advertised => format!("show bgp neighbors {ip} advertised-routes"),
+        };
+        let raw = self.vtysh_run(&cmd).await?;
+        Ok(parse_bgp_table(&raw))
+    }
     // ── fetch_neighbor_detail ─────────────────────────────────────────────────
 
     async fn fetch_neighbor_detail(&self, ip: IpAddr) -> Result<crate::router::cisco::NeighborDetail> {

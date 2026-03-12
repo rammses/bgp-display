@@ -54,6 +54,8 @@ async fn run_loop<B: ratatui::backend::Backend>(
             AppEvent::BgpError(id, err)     => app.handle_bgp_error(id, err),
             AppEvent::RouteData(id, routes) => app.handle_route_data(id, routes),
             AppEvent::RouteMapDetail(id, d) => app.handle_routemap_detail(id, *d),
+            AppEvent::PeerRoutes(id, ip, dir, routes) => app.handle_peer_routes(id, ip, dir, routes),
+            AppEvent::PeerRoutesError(id, ip, dir, err) => app.handle_peer_routes_error(id, ip, dir, err),
         }
 
         if app.should_quit {

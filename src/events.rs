@@ -21,6 +21,10 @@ pub enum AppEvent {
     RouteData(Uuid, Vec<crate::bgp::BgpRoute>),
     /// Route-map detail (entries + expanded prefix/community lists) fetched.
     RouteMapDetail(Uuid, Box<crate::bgp::RouteMapDetail>),
+    /// Per-peer routes fetched (received or advertised).
+    PeerRoutes(Uuid, std::net::IpAddr, crate::bgp::PeerRouteDirection, Vec<crate::bgp::BgpRoute>),
+    /// Per-peer routes fetch failed.
+    PeerRoutesError(Uuid, std::net::IpAddr, crate::bgp::PeerRouteDirection, String),
 }
 
 // ─── Event Handler ────────────────────────────────────────────────────────────
