@@ -299,6 +299,7 @@ pub struct RouteMapEntry {
 
 #[derive(Debug, Clone, Default)]
 pub struct PrefixListEntry {
+    #[allow(dead_code)]
     pub seq:    u32,
     pub action: String,
     pub prefix: String,

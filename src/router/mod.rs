@@ -137,6 +137,7 @@ impl std::fmt::Display for ConnectionStatus {
 // Dispatch is handled via enum rather than dyn trait to keep async ergonomics
 // simple in stable Rust.
 
+#[allow(dead_code)]
 pub enum RouterBackend {
     Cisco(cisco::CiscoBackend),
     VyOs(vyos::VyOsBackend),

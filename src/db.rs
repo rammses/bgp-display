@@ -287,16 +287,6 @@ impl RouterDb {
         Ok(())
     }
 
-    pub fn save_all(&self, routers: &[RouterConfig]) -> Result<()> {
-        // Replace entire set with a transaction
-        let tx = self.conn.unchecked_transaction()?;
-        self.conn.execute("DELETE FROM routers", [])?;
-        for r in routers {
-            self.upsert(r)?;
-        }
-        tx.commit()?;
-        Ok(())
-    }
 
     // ── Project CRUD ──────────────────────────────────────────────────────────
 

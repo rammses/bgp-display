@@ -621,4 +621,3 @@ pub(crate) fn parse_community_list_entries(output: &str) -> Vec<String> {
         .map(|l| l.trim().to_string())
         .collect()
 }
-

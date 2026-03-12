@@ -656,18 +656,6 @@ impl App {
 
     // ── Project management ────────────────────────────────────────────────────
 
-    /// Returns the visible routers (filtered by active project, or all).
-    pub fn visible_routers(&self) -> Vec<&RouterConfig> {
-        if let Some(pid) = self.active_project {
-            if let Some(proj) = self.projects.iter().find(|p| p.id == pid) {
-                return self.all_routers.iter()
-                    .filter(|r| proj.router_ids.contains(&r.id))
-                    .collect();
-            }
-        }
-        self.all_routers.iter().collect()
-    }
-
     /// Rebuild `self.routers` from visible set and reset selection.
     pub fn apply_project_filter(&mut self) {
         let ids: Option<Vec<Uuid>> = self.active_project.and_then(|pid| {
@@ -1273,7 +1261,6 @@ fn navigate_up(app: &mut App) {
             };
             app.conn_log_state.select(Some(next));
         }
-        _ => {}
     }
 }
 
@@ -1337,7 +1324,6 @@ fn navigate_down(app: &mut App) {
             };
             app.conn_log_state.select(Some(next));
         }
-        _ => {}
     }
 }
 

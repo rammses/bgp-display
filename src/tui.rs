@@ -48,7 +48,7 @@ async fn run_loop<B: ratatui::backend::Backend>(
         match events.next().await? {
             AppEvent::Key(key)              => crate::app::handle_key(app, key),
             AppEvent::Tick                  => app.tick(),
-            AppEvent::Resize(_, _)          => {}
+            AppEvent::Resize               => {}
             AppEvent::PingResult(id, reach) => app.handle_ping_result(id, reach),
             AppEvent::BgpData(id, summary)  => app.handle_bgp_data(id, *summary),
             AppEvent::BgpError(id, err)     => app.handle_bgp_error(id, err),

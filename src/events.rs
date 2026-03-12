@@ -10,7 +10,7 @@ use uuid::Uuid;
 pub enum AppEvent {
     Key(KeyEvent),
     Tick,
-    Resize(u16, u16),
+    Resize,
     /// Result of a background TCP reachability probe.
     PingResult(Uuid, bool),
     /// BGP summary fetched successfully from a router.
@@ -54,7 +54,7 @@ impl EventHandler {
             while let Some(Ok(event)) = stream.next().await {
                 let app_event = match event {
                     Event::Key(k)       => AppEvent::Key(k),
-                    Event::Resize(w, h) => AppEvent::Resize(w, h),
+                    Event::Resize(_, _) => AppEvent::Resize,
                     _                   => continue,
                 };
                 if tx_ev.send(app_event).is_err() {
