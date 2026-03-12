@@ -146,23 +146,28 @@ impl CiscoBackend {
         self.local_as  = summary.local_as;
         self.status    = ConnectionStatus::Connected;
 
-        // Fetch per-neighbour detail (description, route-maps) in parallel.
-        let ips: Vec<IpAddr> = summary.peers.iter().map(|p| p.neighbor_ip).collect();
-        let this = &*self; // shared ref for parallel fetches
-        let detail_futs: Vec<_> = ips.iter().map(|&ip| {
-            let cmd = format!("show ip bgp neighbors {ip}");
-            async move {
-                let result = this.ssh_run_or_vtysh(&cmd, "BGP neighbor is").await;
-                (ip, result)
+        // Fetch all neighbour details in a SINGLE SSH call.
+        //
+        // `show ip bgp neighbors` (no IP) prints all neighbours concatenated.
+        // One SSH round-trip replaces N parallel ones — critical when peers are
+        // reachable over high-latency links such as IPSec tunnels.
+        let this = &*self;
+        let mut detail_map = {
+            let cmds = [
+                ("show ip bgp neighbors", "BGP neighbor is"),
+                ("show bgp neighbors",    "BGP neighbor is"),
+            ];
+            let mut map = HashMap::new();
+            'outer: for (cmd, marker) in &cmds {
+                if let Ok(raw) = this.ssh_run_or_vtysh(cmd, marker).await {
+                    if raw.contains(marker) {
+                        map = parse_all_neighbor_details(&raw);
+                        break 'outer;
+                    }
+                }
             }
-        }).collect();
-        let detail_results = futures::future::join_all(detail_futs).await;
-        let mut detail_map: HashMap<IpAddr, NeighborDetail> = HashMap::new();
-        for (ip, result) in detail_results {
-            if let Ok(raw) = result {
-                detail_map.insert(ip, parse_neighbor_detail(&raw));
-            }
-        }
+            map
+        };
 
         // Merge details back into peers
         for peer in &mut summary.peers {
@@ -419,6 +424,40 @@ pub(crate) fn extract_route_map_name(line: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Parse the bulk output of `show ip bgp neighbors` (all peers in one shot).
+///
+/// The output is split on "BGP neighbor is <ip>" lines.  Each block is
+/// parsed by `parse_neighbor_detail` and keyed by the peer IP address.
+pub(crate) fn parse_all_neighbor_details(output: &str) -> HashMap<IpAddr, NeighborDetail> {
+    let mut map = HashMap::new();
+    // Each neighbour block starts with a line like:
+    //   "BGP neighbor is 10.0.0.1, remote AS 65001, ..."
+    let mut current_ip: Option<IpAddr> = None;
+    let mut block = String::new();
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("BGP neighbor is ") {
+            // Flush the previous block
+            if let Some(ip) = current_ip.take() {
+                map.insert(ip, parse_neighbor_detail(&block));
+                block.clear();
+            }
+            // Extract IP from "BGP neighbor is <ip>,"
+            let rest = &trimmed["BGP neighbor is ".len()..];
+            let ip_str = rest.split(&[',', ' ']).next().unwrap_or("");
+            current_ip = ip_str.parse().ok();
+        }
+        block.push_str(line);
+        block.push('\n');
+    }
+    // Flush the last block
+    if let Some(ip) = current_ip {
+        map.insert(ip, parse_neighbor_detail(&block));
+    }
+    map
 }
 
 // ─── BGP table parser (`show ip bgp`) ────────────────────────────────────────

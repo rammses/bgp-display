@@ -17,7 +17,7 @@ use crate::{
     bgp::{parse_bgp_summary, BgpRoute, BgpSummary},
     router::{ConnectionStatus, RouterConfig},
     router::cisco::{
-        parse_bgp_table, parse_neighbor_detail, parse_prefix_list_entries,
+        parse_all_neighbor_details, parse_bgp_table, parse_neighbor_detail, parse_prefix_list_entries,
         parse_route_map_entries, parse_community_list_entries,
     },
 };
@@ -242,29 +242,21 @@ impl PfSenseBackend {
         self.local_as  = summary.local_as;
         self.status    = ConnectionStatus::Connected;
 
-        // Fetch per-neighbour detail (description, route-maps) in parallel
-        let ips: Vec<IpAddr> = summary.peers.iter().map(|p| p.neighbor_ip).collect();
-        let this = &*self; // shared ref for parallel fetches
-        let detail_futs: Vec<_> = ips.iter().map(|&ip| {
-            async move {
-                let cmd = format!("show bgp neighbors {ip}");
-                let r1 = this.vtysh_run(&cmd).await;
-                let raw = if r1.as_ref().is_ok_and(|s| s.contains("BGP neighbor is")) {
-                    r1
-                } else {
-                    let cmd2 = format!("show ip bgp neighbors {ip}");
-                    this.vtysh_run(&cmd2).await
-                };
-                (ip, raw)
+        // Fetch all neighbour details in a SINGLE SSH call.
+        let this = &*self;
+        let mut detail_map = {
+            let cmds = ["show bgp neighbors", "show ip bgp neighbors"];
+            let mut map = std::collections::HashMap::new();
+            'outer: for cmd in &cmds {
+                if let Ok(out) = this.vtysh_run(cmd).await {
+                    if out.contains("BGP neighbor is") {
+                        map = parse_all_neighbor_details(&out);
+                        break 'outer;
+                    }
+                }
             }
-        }).collect();
-        let detail_results = futures::future::join_all(detail_futs).await;
-        let mut detail_map = HashMap::new();
-        for (ip, result) in detail_results {
-            if let Ok(raw) = result {
-                detail_map.insert(ip, parse_neighbor_detail(&raw));
-            }
-        }
+            map
+        };
 
         for peer in &mut summary.peers {
             if let Some(d) = detail_map.remove(&peer.neighbor_ip) {

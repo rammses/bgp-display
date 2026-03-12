@@ -22,7 +22,7 @@ use crate::{
     bgp::{parse_bgp_summary, BgpRoute, BgpSummary},
     router::{ConnectionStatus, RouterConfig},
     router::cisco::{
-        parse_bgp_table, parse_neighbor_detail, parse_prefix_list_entries,
+        parse_all_neighbor_details, parse_bgp_table, parse_neighbor_detail, parse_prefix_list_entries,
         parse_route_map_entries, parse_community_list_entries,
     },
 };
@@ -205,38 +205,31 @@ impl VyOsBackend {
         self.local_as  = summary.local_as;
         self.status    = ConnectionStatus::Connected;
 
-        // Fetch per-neighbour detail (description, route-maps) in parallel
-        let ips: Vec<IpAddr> = summary.peers.iter().map(|p| p.neighbor_ip).collect();
-        let this = &*self; // shared ref for parallel fetches
-        let detail_futs: Vec<_> = ips.iter().map(|&ip| {
-            async move {
-                // Try vtysh first, then raw SSH as fallback
-                let cmds = [
-                    format!("show ip bgp neighbors {ip}"),
-                    format!("show bgp neighbors {ip}"),
-                ];
-                for cmd in &cmds {
-                    if let Ok(out) = this.vtysh_run(cmd).await {
-                        if out.contains("BGP neighbor is") {
-                            return (ip, Ok(out));
-                        }
-                    }
-                }
-                if let Ok(out) = this.raw_ssh_run(&format!("show ip bgp neighbors {ip}")).await {
+        // Fetch all neighbour details in a SINGLE vtysh call.
+        let mut detail_map = {
+            let cmds = [
+                "show ip bgp neighbors",
+                "show bgp neighbors",
+            ];
+            let mut map = std::collections::HashMap::new();
+            'outer: for cmd in &cmds {
+                if let Ok(out) = self.vtysh_run(cmd).await {
                     if out.contains("BGP neighbor is") {
-                        return (ip, Ok(out));
+                        map = parse_all_neighbor_details(&out);
+                        break 'outer;
                     }
                 }
-                (ip, Err(anyhow::anyhow!("could not fetch neighbor detail for {ip}")))
             }
-        }).collect();
-        let detail_results = futures::future::join_all(detail_futs).await;
-        let mut detail_map = HashMap::new();
-        for (ip, result) in detail_results {
-            if let Ok(raw) = result {
-                detail_map.insert(ip, parse_neighbor_detail(&raw));
+            // Fallback: raw SSH (no vtysh wrapper)
+            if map.is_empty() {
+                if let Ok(out) = self.raw_ssh_run("show ip bgp neighbors").await {
+                    if out.contains("BGP neighbor is") {
+                        map = parse_all_neighbor_details(&out);
+                    }
+                }
             }
-        }
+            map
+        };
 
         for peer in &mut summary.peers {
             if let Some(d) = detail_map.remove(&peer.neighbor_ip) {
