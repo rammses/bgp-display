@@ -66,7 +66,7 @@ impl PfSenseBackend {
     // `-T` disables PTY allocation so we get clean pipe I/O.
     // Stdout is post-processed to strip menu banners.
 
-    async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
+    async fn raw_ssh_run_inner(&self, shell_cmd: &str) -> Result<String> {
         let target = format!("{}@{}", self.username, self.hostname);
         let port_str = self.port.to_string();
         let control_path_arg = format!("ControlPath={}", crate::router::SSH_MUX_CONTROL_PATH);
@@ -124,6 +124,16 @@ impl PfSenseBackend {
 
         let raw = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(Self::strip_menu_noise(&raw))
+    }
+
+    async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
+        match self.raw_ssh_run_inner(shell_cmd).await {
+            Err(e) if crate::router::is_ssh_mux_error(&e) => {
+                crate::router::cleanup_mux_socket(&self.username, &self.hostname, self.port).await;
+                self.raw_ssh_run_inner(shell_cmd).await
+            }
+            other => other,
+        }
     }
 
     // ── Strip pfSense console menu noise ──────────────────────────────────────

@@ -52,7 +52,7 @@ impl CiscoBackend {
     //   -o StrictHostKeyChecking=accept-new  – auto-accept on first connect
     //   -o LogLevel=ERROR            – suppress "Warning: Permanently added…"
 
-    async fn ssh_run(&self, cmd: &str) -> Result<String> {
+    async fn ssh_run_inner(&self, cmd: &str) -> Result<String> {
         let target = format!("{}@{}", self.username, self.hostname);
         let port_str = self.port.to_string();
         let control_path_arg = format!("ControlPath={}", crate::router::SSH_MUX_CONTROL_PATH);
@@ -82,6 +82,16 @@ impl CiscoBackend {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    async fn ssh_run(&self, cmd: &str) -> Result<String> {
+        match self.ssh_run_inner(cmd).await {
+            Err(e) if crate::router::is_ssh_mux_error(&e) => {
+                crate::router::cleanup_mux_socket(&self.username, &self.hostname, self.port).await;
+                self.ssh_run_inner(cmd).await
+            }
+            other => other,
+        }
     }
 
     /// Run a command, falling back to `vtysh -c '<cmd>'` if the plain output

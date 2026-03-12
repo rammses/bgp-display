@@ -79,7 +79,7 @@ impl FortiGateBackend {
     // pipes it to `ssh -T`, strips FortiOS prompt noise from stdout, and
     // returns clean output ready for the BGP parsers.
 
-    async fn run_cli_pipeline(&self, cmds: &[&str]) -> Result<String> {
+    async fn run_cli_pipeline_inner(&self, cmds: &[&str]) -> Result<String> {
         let mut script = String::new();
 
         if let Some(ref vdom) = self.vdom {
@@ -151,6 +151,16 @@ impl FortiGateBackend {
 
         let raw = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(strip_fortigate_noise(&raw))
+    }
+
+    async fn run_cli_pipeline(&self, cmds: &[&str]) -> Result<String> {
+        match self.run_cli_pipeline_inner(cmds).await {
+            Err(e) if crate::router::is_ssh_mux_error(&e) => {
+                crate::router::cleanup_mux_socket(&self.username, &self.hostname, self.port).await;
+                self.run_cli_pipeline_inner(cmds).await
+            }
+            other => other,
+        }
     }
 
     // ── connect ───────────────────────────────────────────────────────────────

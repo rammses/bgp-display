@@ -86,7 +86,7 @@ impl CitrixVpxBackend {
     // with a built-in `sleep` to ensure the `shell` sub-command is processed
     // before the actual command is sent.
 
-    async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
+    async fn raw_ssh_run_inner(&self, shell_cmd: &str) -> Result<String> {
         let ssh_part = self.ssh_cmd_str();
         // Escape single quotes in the command for safe shell embedding
         let escaped_cmd = shell_cmd.replace('\'', "'\\''");
@@ -115,6 +115,16 @@ impl CitrixVpxBackend {
 
         let raw = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(Self::strip_citrix_noise(&raw))
+    }
+
+    async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
+        match self.raw_ssh_run_inner(shell_cmd).await {
+            Err(e) if crate::router::is_ssh_mux_error(&e) => {
+                crate::router::cleanup_mux_socket(&self.username, &self.hostname, self.port).await;
+                self.raw_ssh_run_inner(shell_cmd).await
+            }
+            other => other,
+        }
     }
 
     // ── Strip Citrix ADC banner / warning / shell noise ──────────────────────

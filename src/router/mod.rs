@@ -41,6 +41,36 @@ pub async fn cleanup_ssh_sessions(routers: &[RouterConfig]) {
     }
 }
 
+/// Close the ControlMaster socket for a single user@host:port combination.
+///
+/// Called automatically when a command fails with a stale-socket error so
+/// the next retry gets a fresh master.
+pub async fn cleanup_mux_socket(username: &str, hostname: &str, port: u16) {
+    let control_path_arg = format!("ControlPath={}", SSH_MUX_CONTROL_PATH);
+    let target = format!("{username}@{hostname}");
+    let port_str = port.to_string();
+    let _ = tokio::process::Command::new("ssh")
+        .args([
+            "-O", "exit",
+            "-p", &port_str,
+            "-o", &control_path_arg,
+            &target,
+        ])
+        .stderr(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .output()
+        .await;
+}
+
+/// Returns true when an SSH error is caused by a stale ControlMaster socket.
+///
+/// OpenSSH emits "Failed to connect to new control master" when the socket
+/// file `/tmp/bgp-lm-…` still exists but the master process is dead.
+pub fn is_ssh_mux_error(err: &anyhow::Error) -> bool {
+    let s = err.to_string();
+    s.contains("control master") || s.contains("ControlSocket")
+}
+
 // ─── Vendor ───────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

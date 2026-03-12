@@ -64,7 +64,7 @@ impl VyOsBackend {
     // Runs:  ssh [opts] user@host "<shell_cmd>"
     // The caller is responsible for wrapping daemons commands in vtysh_run().
 
-    async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
+    async fn raw_ssh_run_inner(&self, shell_cmd: &str) -> Result<String> {
         let target = format!("{}@{}", self.username, self.hostname);
         let port_str = self.port.to_string();
         let control_path_arg = format!("ControlPath={}", crate::router::SSH_MUX_CONTROL_PATH);
@@ -107,6 +107,16 @@ impl VyOsBackend {
         }
 
         Ok(String::from_utf8_lossy(&output.stdout).to_string())
+    }
+
+    async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
+        match self.raw_ssh_run_inner(shell_cmd).await {
+            Err(e) if crate::router::is_ssh_mux_error(&e) => {
+                crate::router::cleanup_mux_socket(&self.username, &self.hostname, self.port).await;
+                self.raw_ssh_run_inner(shell_cmd).await
+            }
+            other => other,
+        }
     }
 
     // ── vtysh helper ──────────────────────────────────────────────────────────
