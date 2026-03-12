@@ -4,6 +4,7 @@ use uuid::Uuid;
 
 pub mod cisco;
 pub mod citrix;
+pub mod fortigate;
 pub mod pfsense;
 pub mod vyos;
 
@@ -48,6 +49,7 @@ pub enum RouterVendor {
     VyOs,
     CitrixVpx,
     PfSense,
+    FortiGate,
 }
 
 impl std::fmt::Display for RouterVendor {
@@ -57,6 +59,7 @@ impl std::fmt::Display for RouterVendor {
             RouterVendor::VyOs      => write!(f, "VyOs"),
             RouterVendor::CitrixVpx => write!(f, "CitrixVpx"),
             RouterVendor::PfSense   => write!(f, "PfSense"),
+            RouterVendor::FortiGate => write!(f, "FortiGate"),
         }
     }
 }
@@ -75,6 +78,8 @@ pub struct RouterConfig {
     pub password:  Option<String>,
     pub local_as:  Option<u32>,
     pub router_id: Option<IpAddr>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vdom:      Option<String>,
 }
 
 impl Default for RouterConfig {
@@ -89,6 +94,7 @@ impl Default for RouterConfig {
             password:  None,
             local_as:  None,
             router_id: None,
+            vdom:      None,
         }
     }
 }

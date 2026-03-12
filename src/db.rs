@@ -29,10 +29,10 @@ use uuid::Uuid;
 
 fn default_routers() -> Vec<RouterConfig> {
     vec![
-        RouterConfig { id: Uuid::new_v4(), name: "eqx-master".into(), hostname: "192.168.122.227".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None },
-        RouterConfig { id: Uuid::new_v4(), name: "eqx-slave".into(),  hostname: "192.168.122.187".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None },
-        RouterConfig { id: Uuid::new_v4(), name: "kkb-master".into(), hostname: "192.168.122.184".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None },
-        RouterConfig { id: Uuid::new_v4(), name: "kkb-slave".into(),  hostname: "192.168.122.34".into(),  vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None },
+        RouterConfig { id: Uuid::new_v4(), name: "eqx-master".into(), hostname: "192.168.122.227".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None, vdom: None },
+        RouterConfig { id: Uuid::new_v4(), name: "eqx-slave".into(),  hostname: "192.168.122.187".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None, vdom: None },
+        RouterConfig { id: Uuid::new_v4(), name: "kkb-master".into(), hostname: "192.168.122.184".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None, vdom: None },
+        RouterConfig { id: Uuid::new_v4(), name: "kkb-slave".into(),  hostname: "192.168.122.34".into(),  vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None, vdom: None },
     ]
 }
 
@@ -121,9 +121,13 @@ impl RouterDb {
                  username     TEXT NOT NULL DEFAULT 'admin',
                  password_enc TEXT,
                  local_as     INTEGER,
-                 router_id    TEXT
+                 router_id    TEXT,
+                 vdom         TEXT
              );",
         )?;
+
+        // Migrate: add vdom column to existing databases that predate this field.
+        let _ = conn.execute("ALTER TABLE routers ADD COLUMN vdom TEXT", []);
 
         // Get or create salt
         let salt_b64: String = match conn.query_row(
@@ -184,28 +188,29 @@ impl RouterDb {
     pub fn load_all(&self) -> Result<Vec<RouterConfig>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, hostname, vendor, ssh_port, username,
-                    password_enc, local_as, router_id
+                    password_enc, local_as, router_id, vdom
              FROM routers ORDER BY rowid",
         )?;
 
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,   // id
-                row.get::<_, String>(1)?,   // name
-                row.get::<_, String>(2)?,   // hostname
-                row.get::<_, String>(3)?,   // vendor
-                row.get::<_, u16>(4)?,      // ssh_port
-                row.get::<_, String>(5)?,   // username
-                row.get::<_, Option<String>>(6)?,  // password_enc
-                row.get::<_, Option<u32>>(7)?,     // local_as
-                row.get::<_, Option<String>>(8)?,  // router_id
+                row.get::<_, String>(0)?,              // id
+                row.get::<_, String>(1)?,              // name
+                row.get::<_, String>(2)?,              // hostname
+                row.get::<_, String>(3)?,              // vendor
+                row.get::<_, u16>(4)?,                 // ssh_port
+                row.get::<_, String>(5)?,              // username
+                row.get::<_, Option<String>>(6)?,      // password_enc
+                row.get::<_, Option<u32>>(7)?,         // local_as
+                row.get::<_, Option<String>>(8)?,      // router_id
+                row.get::<_, Option<String>>(9)?,      // vdom
             ))
         })?;
 
         let mut routers = Vec::new();
         for row in rows {
             let (id_s, name, hostname, vendor_s, ssh_port, username,
-                 password_enc, local_as, router_id_s) = row?;
+                 password_enc, local_as, router_id_s, vdom) = row?;
 
             let password = if let Some(enc) = password_enc {
                 match decrypt(&self.key, &enc) {
@@ -225,6 +230,7 @@ impl RouterDb {
                 "vyos"               => RouterVendor::VyOs,
                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
                 "pfsense"            => RouterVendor::PfSense,
+                "fortigate"          => RouterVendor::FortiGate,
                 _                    => RouterVendor::Cisco,
             };
 
@@ -238,6 +244,7 @@ impl RouterDb {
                 password,
                 local_as,
                 router_id,
+                vdom,
             });
         }
         Ok(routers)
@@ -253,8 +260,8 @@ impl RouterDb {
         self.conn.execute(
             "INSERT INTO routers
                  (id, name, hostname, vendor, ssh_port, username,
-                  password_enc, local_as, router_id)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)
+                  password_enc, local_as, router_id, vdom)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
              ON CONFLICT(id) DO UPDATE SET
                  name         = excluded.name,
                  hostname     = excluded.hostname,
@@ -263,7 +270,8 @@ impl RouterDb {
                  username     = excluded.username,
                  password_enc = excluded.password_enc,
                  local_as     = excluded.local_as,
-                 router_id    = excluded.router_id",
+                 router_id    = excluded.router_id,
+                 vdom         = excluded.vdom",
             params![
                 r.id.to_string(),
                 r.name,
@@ -274,6 +282,7 @@ impl RouterDb {
                 password_enc,
                 r.local_as,
                 router_id_s,
+                r.vdom,
             ],
         )?;
         Ok(())

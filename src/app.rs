@@ -30,8 +30,8 @@ pub enum ProjectEditorMode {
 }
 
 /// Displayable field labels for the router editor form.
-pub const EDITOR_FIELDS:  &[&str] = &["Name", "Hostname", "Port", "Username", "Password", "Vendor"];
-pub const EDITOR_NFIELDS: usize   = 6;
+pub const EDITOR_FIELDS:  &[&str] = &["Name", "Hostname", "Port", "Username", "Password", "Vendor", "VDOM"];
+pub const EDITOR_NFIELDS: usize   = 7;
 
 // ─── Filter Mode ─────────────────────────────────────────────────────────────
 
@@ -443,6 +443,13 @@ impl App {
                             Err(e) => Err(e),
                         }
                     }
+                    RouterVendor::FortiGate => {
+                        let mut b = crate::router::fortigate::FortiGateBackend::new(&router);
+                        match b.refresh().await {
+                            Ok(s) => { let r = b.get_routes().await.unwrap_or_default(); Ok((s, r)) }
+                            Err(e) => Err(e),
+                        }
+                    }
                 };
             match result {
                 Ok((summary, routes)) => {
@@ -682,6 +689,10 @@ impl App {
                     let b = crate::router::pfsense::PfSenseBackend::new(&router);
                     b.fetch_route_map_detail(&rm_name).await
                 }
+                RouterVendor::FortiGate => {
+                    let b = crate::router::fortigate::FortiGateBackend::new(&router);
+                    b.fetch_route_map_detail(&rm_name).await
+                }
             };
             if let Ok(detail) = detail {
                 let _ = tx.send(AppEvent::RouteMapDetail(router.id, Box::new(detail)));
@@ -793,6 +804,10 @@ impl App {
                 }
                 RouterVendor::PfSense => {
                     let b = crate::router::pfsense::PfSenseBackend::new(&router);
+                    b.get_peer_routes(ip, dir).await
+                }
+                RouterVendor::FortiGate => {
+                    let b = crate::router::fortigate::FortiGateBackend::new(&router);
                     b.get_peer_routes(ip, dir).await
                 }
             };
@@ -1162,6 +1177,7 @@ pub fn editor_field_value(r: &RouterConfig, field: usize) -> String {
         3 => r.username.clone(),
         4 => r.password.clone().unwrap_or_default(),
         5 => r.vendor.to_string(),
+        6 => r.vdom.clone().unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -1177,8 +1193,10 @@ pub fn apply_buf_to_draft(draft: &mut RouterConfig, field: usize, buf: &str) {
                  "vyos"      => RouterVendor::VyOs,
                  "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
                  "pfsense"   => RouterVendor::PfSense,
+                 "fortigate" => RouterVendor::FortiGate,
                  _           => RouterVendor::Cisco,
              },
+        6 => draft.vdom     = if buf.is_empty() { None } else { Some(buf.to_string()) },
         _ => {}
     }
 }
@@ -1215,7 +1233,8 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         RouterVendor::Cisco     => RouterVendor::VyOs,
                         RouterVendor::VyOs      => RouterVendor::CitrixVpx,
                         RouterVendor::CitrixVpx => RouterVendor::PfSense,
-                        RouterVendor::PfSense   => RouterVendor::Cisco,
+                        RouterVendor::PfSense   => RouterVendor::FortiGate,
+                        RouterVendor::FortiGate => RouterVendor::Cisco,
                     };
                     app.editor_buf = draft.vendor.to_string();
                 }

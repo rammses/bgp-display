@@ -102,6 +102,7 @@ fn draw_edit_form(f: &mut Frame, app: &App, area: Rect) {
                             .map(|p| "●".repeat(p.len()))
                             .unwrap_or_default(),
                     5 => d.vendor.to_string(),
+                    6 => d.vdom.clone().unwrap_or_default(),
                     _ => String::new(),
                 }
             };
