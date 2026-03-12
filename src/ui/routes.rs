@@ -1,5 +1,5 @@
 use crate::{
-    app::App,
+    app::{App, FilterMode},
     bgp::{RouteOrigin, RouteStatus},
     ui::{C_BORDER, C_DIM, C_ESTABLISHED, C_HEADER, C_SELECTED, C_WARN},
 };
@@ -14,13 +14,26 @@ use ratatui::{
 // ─── Routes tab ───────────────────────────────────────────────────────────────
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(5)])
-        .split(area);
+    // Split off a filter bar when filter is active
+    let (table_area, filter_area, detail_area) = if app.route_filter_mode != FilterMode::Off {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(5)])
+            .split(area);
+        (chunks[0], Some(chunks[1]), chunks[2])
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(5)])
+            .split(area);
+        (chunks[0], None, chunks[1])
+    };
 
-    draw_route_table(f, app, rows[0]);
-    draw_route_detail(f, app, rows[1]);
+    draw_route_table(f, app, table_area);
+    if let Some(fa) = filter_area {
+        draw_filter_bar(f, &app.route_filter, app.route_filter_mode == FilterMode::Typing, fa);
+    }
+    draw_route_detail(f, app, detail_area);
 }
 
 // ─── Route table ──────────────────────────────────────────────────────────────
@@ -65,9 +78,10 @@ fn draw_route_table(f: &mut Frame, app: &mut App, area: Rect) {
     .style(Style::default().add_modifier(Modifier::UNDERLINED));
 
     let rows: Vec<Row> = app
-        .current_routes
+        .route_indices
         .iter()
-        .map(|route| {
+        .map(|&idx| {
+            let route = &app.current_routes[idx];
             Row::new(vec![
                 Cell::from(route.status.to_string()).style(status_style(&route.status)),
                 Cell::from(route.network.clone()),
@@ -91,11 +105,13 @@ fn draw_route_table(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let title = format!(
-        " BGP Routes: {} ({} routes) ",
-        router_name,
-        app.current_routes.len()
-    );
+    let total = app.current_routes.len();
+    let shown = app.route_indices.len();
+    let title = if app.route_filter_mode != FilterMode::Off {
+        format!(" BGP Routes: {} ({}/{} match) ", router_name, shown, total)
+    } else {
+        format!(" BGP Routes: {} ({} routes) ", router_name, total)
+    };
 
     let widths = [
         Constraint::Length(3),
@@ -130,10 +146,12 @@ fn draw_route_table(f: &mut Frame, app: &mut App, area: Rect) {
 // ─── Route detail pane ────────────────────────────────────────────────────────
 
 fn draw_route_detail(f: &mut Frame, app: &App, area: Rect) {
+    // Resolve through the filter index map to the actual route
     let route = app
         .route_table_state
         .selected()
-        .and_then(|i| app.current_routes.get(i));
+        .and_then(|i| app.route_indices.get(i))
+        .and_then(|&idx| app.current_routes.get(idx));
 
     let lines: Vec<Line> = if let Some(r) = route {
         vec![
@@ -182,4 +200,28 @@ fn draw_route_detail(f: &mut Frame, app: &App, area: Rect) {
 
 fn kv(key: &str, val: String) -> Span<'static> {
     Span::raw(format!("{key}{val}"))
+}
+
+// ─── Filter bar ───────────────────────────────────────────────────────────────
+
+fn draw_filter_bar(f: &mut Frame, filter: &str, is_typing: bool, area: Rect) {
+    let cursor = if is_typing { "▌" } else { "" };
+    let hint   = if is_typing { " Enter: apply  Esc: clear" } else { " /: edit  Esc: clear" };
+    let content = Line::from(vec![
+        Span::styled(format!(" / {filter}{cursor}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(hint.to_string(), Style::default().fg(C_DIM)),
+    ]);
+    let border_style = if is_typing {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(C_WARN)
+    };
+    let para = Paragraph::new(content)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(Span::styled(" Filter ", Style::default().fg(C_SELECTED))),
+        );
+    f.render_widget(para, area);
 }
