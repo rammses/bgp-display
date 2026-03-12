@@ -1,11 +1,11 @@
 use crate::{
-    app::App,
+    app::{App, FilterMode},
     bgp::BgpState,
-    ui::{C_BORDER, C_DIM, C_EBGP, C_HEADER, C_IBGP, C_SELECTED, fmt_num, state_style},
+    ui::{C_BORDER, C_DIM, C_EBGP, C_HEADER, C_IBGP, C_SELECTED, C_WARN, fmt_num, state_style},
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Modifier, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Cell, Paragraph, Row, Table},
     Frame,
@@ -14,13 +14,26 @@ use ratatui::{
 // ─── Peers tab ────────────────────────────────────────────────────────────────
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(7)])
-        .split(area);
+    // Split off a filter bar between table and detail when filter is active
+    let (table_area, filter_area, detail_area) = if app.peer_filter_mode != FilterMode::Off {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(7)])
+            .split(area);
+        (chunks[0], Some(chunks[1]), chunks[2])
+    } else {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(7)])
+            .split(area);
+        (chunks[0], None, chunks[1])
+    };
 
-    draw_peer_table(f, app, rows[0]);
-    draw_peer_detail(f, app, rows[1]);
+    draw_peer_table(f, app, table_area);
+    if let Some(fa) = filter_area {
+        draw_filter_bar(f, &app.peer_filter, app.peer_filter_mode == FilterMode::Typing, fa);
+    }
+    draw_peer_detail(f, app, detail_area);
 }
 
 // ─── Peer table ───────────────────────────────────────────────────────────────
@@ -57,9 +70,10 @@ fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
     .style(Style::default().add_modifier(Modifier::UNDERLINED));
 
     let rows: Vec<Row> = app
-        .current_peers
+        .peer_indices
         .iter()
-        .map(|peer| {
+        .map(|&idx| {
+            let peer = &app.current_peers[idx];
             let type_style = if peer.remote_as == local_as {
                 Style::default().fg(C_IBGP)
             } else {
@@ -85,7 +99,13 @@ fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let title = format!(" BGP Peers: {} ({} peers) ", router_name, app.current_peers.len());
+    let total = app.current_peers.len();
+    let shown = app.peer_indices.len();
+    let title = if app.peer_filter_mode != FilterMode::Off {
+        format!(" BGP Peers: {} ({}/{} match) ", router_name, shown, total)
+    } else {
+        format!(" BGP Peers: {} ({} peers) ", router_name, total)
+    };
 
     let widths = [
         Constraint::Length(16),
@@ -122,7 +142,10 @@ fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
     let selected = app.peer_table_state.selected();
-    let peer     = selected.and_then(|i| app.current_peers.get(i));
+    // Resolve through the filter index map to the actual peer
+    let peer = selected
+        .and_then(|i| app.peer_indices.get(i))
+        .and_then(|&idx| app.current_peers.get(idx));
 
     let lines: Vec<Line> = if let Some(p) = peer {
         let type_color = if p.remote_as == app.current_summary.as_ref().map(|s| s.local_as).unwrap_or(0) {
@@ -182,7 +205,8 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
     };
 
     let title = selected
-        .and_then(|i| app.current_peers.get(i))
+        .and_then(|i| app.peer_indices.get(i))
+        .and_then(|&idx| app.current_peers.get(idx))
         .map(|p| format!(" Peer Detail: {} ", p.neighbor_ip))
         .unwrap_or_else(|| " Peer Detail ".into());
 
@@ -201,4 +225,28 @@ fn kv(key: &str, val: String) -> Span<'static> {
 
 fn bool_str(b: bool) -> &'static str {
     if b { "Yes" } else { "No" }
+}
+
+// ─── Filter bar ───────────────────────────────────────────────────────────────
+
+fn draw_filter_bar(f: &mut Frame, filter: &str, is_typing: bool, area: Rect) {
+    let cursor = if is_typing { "▌" } else { "" };
+    let hint   = if is_typing { " Enter: apply  Esc: clear" } else { " /: edit  Esc: clear" };
+    let content = Line::from(vec![
+        Span::styled(format!(" / {filter}{cursor}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(hint.to_string(), Style::default().fg(C_DIM)),
+    ]);
+    let border_style = if is_typing {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default().fg(C_WARN)
+    };
+    let para = Paragraph::new(content)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style)
+                .title(Span::styled(" Filter ", Style::default().fg(C_SELECTED))),
+        );
+    f.render_widget(para, area);
 }

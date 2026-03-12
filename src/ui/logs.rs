@@ -30,7 +30,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
         })
         .collect();
 
-    let title = format!(" Logs ({} entries) ", app.logs.len());
+    let title = format!(" BGP Events ({} entries) ", app.logs.len());
 
     let list = List::new(items)
         .block(

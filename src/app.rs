@@ -32,6 +32,18 @@ pub enum ProjectEditorMode {
 pub const EDITOR_FIELDS:  &[&str] = &["Name", "Hostname", "Port", "Username", "Password", "Vendor"];
 pub const EDITOR_NFIELDS: usize   = 6;
 
+// ─── Filter Mode ─────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterMode {
+    /// No filter active.
+    Off,
+    /// Filter bar visible and user is typing.
+    Typing,
+    /// Filter applied and bar visible, but not actively typing.
+    Active,
+}
+
 // ─── Active Tab ───────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,9 +98,9 @@ impl ActiveTab {
             ActiveTab::Peers     => "2 Peers",
             ActiveTab::Routes    => "3 Routes",
             ActiveTab::Config    => "4 Config",
-            ActiveTab::Logs      => "5 Logs",
+            ActiveTab::Logs      => "5 BGP Log",
             ActiveTab::Routers   => "6 Routers",
-            ActiveTab::ConnLog   => "7 ConnLog",
+            ActiveTab::ConnLog   => "7 SSH Log",
         }
     }
 }
@@ -128,6 +140,18 @@ pub struct App {
     pub current_routes:    Vec<BgpRoute>,
     pub peer_table_state:  TableState,
     pub route_table_state: TableState,
+
+    // Filter state — Peers tab
+    pub peer_filter:      String,
+    pub peer_filter_mode: FilterMode,
+    /// Indices into current_peers that pass the current filter (all when Off).
+    pub peer_indices:     Vec<usize>,
+
+    // Filter state — Routes tab
+    pub route_filter:      String,
+    pub route_filter_mode: FilterMode,
+    /// Indices into current_routes that pass the current filter (all when Off).
+    pub route_indices:     Vec<usize>,
 
     // Rendered Cisco config stanza for Config tab
     pub rendered_config:   String,
@@ -200,6 +224,12 @@ impl App {
             current_routes:    vec![],
             peer_table_state:  TableState::default(),
             route_table_state: TableState::default(),
+            peer_filter:       String::new(),
+            peer_filter_mode:  FilterMode::Off,
+            peer_indices:      vec![],
+            route_filter:      String::new(),
+            route_filter_mode: FilterMode::Off,
+            route_indices:     vec![],
             rendered_config:   String::new(),
             config_lines:      vec![],
             config_list_state: ListState::default(),
@@ -250,6 +280,61 @@ impl App {
         self.event_tx = Some(tx);
     }
 
+    // ── Filter helpers ────────────────────────────────────────────────────────
+
+    /// Recompute `peer_indices` from the current filter and peers list.
+    pub fn update_peer_filter(&mut self) {
+        let filter = self.peer_filter.to_lowercase();
+        self.peer_indices = (0..self.current_peers.len())
+            .filter(|&i| {
+                if filter.is_empty() { return true; }
+                let p = &self.current_peers[i];
+                p.neighbor_ip.to_string().contains(&filter)
+                    || p.remote_as.to_string().contains(&filter)
+                    || p.state.as_str().to_lowercase().contains(&filter)
+                    || p.description.as_deref().unwrap_or("").to_lowercase().contains(&filter)
+                    || p.route_map_in.as_deref().unwrap_or("").to_lowercase().contains(&filter)
+                    || p.route_map_out.as_deref().unwrap_or("").to_lowercase().contains(&filter)
+                    || p.session_type().to_lowercase().contains(&filter)
+            })
+            .collect();
+        // Keep selection valid
+        match self.peer_table_state.selected() {
+            Some(i) if i >= self.peer_indices.len() => {
+                self.peer_table_state.select(if self.peer_indices.is_empty() { None } else { Some(0) });
+            }
+            None if !self.peer_indices.is_empty() => {
+                self.peer_table_state.select(Some(0));
+            }
+            _ => {}
+        }
+    }
+
+    /// Recompute `route_indices` from the current filter and routes list.
+    pub fn update_route_filter(&mut self) {
+        let filter = self.route_filter.to_lowercase();
+        self.route_indices = (0..self.current_routes.len())
+            .filter(|&i| {
+                if filter.is_empty() { return true; }
+                let r = &self.current_routes[i];
+                r.network.to_lowercase().contains(&filter)
+                    || r.next_hop.to_lowercase().contains(&filter)
+                    || r.as_path_str().contains(&filter)
+                    || r.communities.iter().any(|c| c.to_lowercase().contains(&filter))
+                    || r.origin.to_string().to_lowercase().contains(&filter)
+            })
+            .collect();
+        match self.route_table_state.selected() {
+            Some(i) if i >= self.route_indices.len() => {
+                self.route_table_state.select(if self.route_indices.is_empty() { None } else { Some(0) });
+            }
+            None if !self.route_indices.is_empty() => {
+                self.route_table_state.select(Some(0));
+            }
+            _ => {}
+        }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     pub fn selected_router(&self) -> Option<&RouterConfig> {
@@ -293,6 +378,8 @@ impl App {
                 self.config_lines    = vec![];
             }
         }
+        self.update_peer_filter();
+        self.update_route_filter();
         self.spawn_bgp_fetch_selected();
     }
 
@@ -421,8 +508,7 @@ impl App {
                 ConnectionStatus::Disconnected => format!("{name} went OFFLINE"),
                 _ => return,
             };
-            self.conn_log(msg.clone());
-            self.log(msg);
+            self.conn_log(msg);
         }
         self.router_status.insert(id, new_status);
 
@@ -488,6 +574,7 @@ impl App {
         self.config_routemap = None;
         // Invalidate cached route-map details for this router since BGP data changed
         self.routemap_cache.retain(|&(rid, _), _| rid != id);
+        self.update_peer_filter();
     }
 
     /// Accept pending BGP update and apply it to the displayed state.
@@ -502,6 +589,8 @@ impl App {
             self.current_routes = routes;
         }
         self.has_pending_update = false;
+        self.update_peer_filter();
+        self.update_route_filter();
         self.set_status("Update applied");
         self.log("Pending BGP update applied");
     }
@@ -539,6 +628,7 @@ impl App {
             }
 
             self.current_routes = routes;
+            self.update_route_filter();
         }
     }
 
@@ -617,7 +707,6 @@ impl App {
             .map(|r| r.name.clone())
             .unwrap_or_else(|| id.to_string());
         let msg = format!("{name}: BGP fetch failed — {err}");
-        self.conn_log(msg.clone());
         self.log(msg);
         self.router_status.insert(id, ConnectionStatus::Error(err));
     }
@@ -851,8 +940,7 @@ impl App {
                 // Auto-persist deletion to DB immediately
                 self.db_delete(removed.id);
                 let msg = format!("Router '{}' removed", removed.name);
-                self.conn_log(msg.clone());
-                self.log(msg);
+                self.conn_log(msg);
                 if self.routers.is_empty() {
                     self.editor_list_state.select(None);
                 } else {
@@ -905,7 +993,6 @@ impl App {
                     self.all_routers[apos] = draft.clone();
                 }
                 self.conn_log(format!("Router '{name}' updated"));
-                self.log(format!("Router '{name}' updated"));
             } else {
                 self.routers.push(draft.clone());
                 self.all_routers.push(draft.clone());
@@ -915,7 +1002,6 @@ impl App {
                     self.router_list_state.select(Some(0));
                 }
                 self.conn_log(format!("Router '{name}' added"));
-                self.log(format!("Router '{name}' added"));
             }
             // Auto-persist to encrypted DB immediately
             self.db_upsert(&draft);
@@ -1105,6 +1191,60 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         }
     }
 
+    // ── Filter input capture (Peers / Routes tab, while Typing) ────────────────────
+    if app.peer_filter_mode == FilterMode::Typing && app.current_tab == ActiveTab::Peers {
+        match key.code {
+            KeyCode::Esc => {
+                app.peer_filter.clear();
+                app.peer_filter_mode = FilterMode::Off;
+                app.update_peer_filter();
+            }
+            KeyCode::Enter => {
+                app.peer_filter_mode = if app.peer_filter.is_empty() {
+                    FilterMode::Off
+                } else {
+                    FilterMode::Active
+                };
+            }
+            KeyCode::Backspace => {
+                app.peer_filter.pop();
+                app.update_peer_filter();
+            }
+            KeyCode::Char(c) => {
+                app.peer_filter.push(c);
+                app.update_peer_filter();
+            }
+            _ => {}
+        }
+        return;
+    }
+    if app.route_filter_mode == FilterMode::Typing && app.current_tab == ActiveTab::Routes {
+        match key.code {
+            KeyCode::Esc => {
+                app.route_filter.clear();
+                app.route_filter_mode = FilterMode::Off;
+                app.update_route_filter();
+            }
+            KeyCode::Enter => {
+                app.route_filter_mode = if app.route_filter.is_empty() {
+                    FilterMode::Off
+                } else {
+                    FilterMode::Active
+                };
+            }
+            KeyCode::Backspace => {
+                app.route_filter.pop();
+                app.update_route_filter();
+            }
+            KeyCode::Char(c) => {
+                app.route_filter.push(c);
+                app.update_route_filter();
+            }
+            _ => {}
+        }
+        return;
+    }
+
     // Global quit
     match (key.code, key.modifiers) {
         (KeyCode::Char('q'), _) | (KeyCode::Char('Q'), _) => {
@@ -1144,6 +1284,28 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         // ── Navigation ───────────────────────────────────────────────────────
         KeyCode::Up   | KeyCode::Char('k') => navigate_up(app),
         KeyCode::Down | KeyCode::Char('j') => navigate_down(app),
+
+        // ── Open filter (Peers / Routes tab) ──────────────────────────────────
+        KeyCode::Char('/') if app.current_tab == ActiveTab::Peers => {
+            app.peer_filter_mode = FilterMode::Typing;
+        }
+        KeyCode::Char('/') if app.current_tab == ActiveTab::Routes => {
+            app.route_filter_mode = FilterMode::Typing;
+        }
+
+        // ── Dismiss active filter with Esc (Peers / Routes tab) ──────────────────
+        KeyCode::Esc if app.current_tab == ActiveTab::Peers
+            && app.peer_filter_mode != FilterMode::Off => {
+            app.peer_filter.clear();
+            app.peer_filter_mode = FilterMode::Off;
+            app.update_peer_filter();
+        }
+        KeyCode::Esc if app.current_tab == ActiveTab::Routes
+            && app.route_filter_mode != FilterMode::Off => {
+            app.route_filter.clear();
+            app.route_filter_mode = FilterMode::Off;
+            app.update_route_filter();
+        }
 
         // ── Scroll route-map detail (Config tab) ─────────────────────────────
         KeyCode::PageDown => {
@@ -1213,17 +1375,19 @@ fn navigate_up(app: &mut App) {
             app.reload_selected_router();
         }
         ActiveTab::Peers => {
-            if app.current_peers.is_empty() { return; }
+            if app.peer_indices.is_empty() { return; }
+            let len = app.peer_indices.len();
             let next = match app.peer_table_state.selected() {
-                Some(0) | None => app.current_peers.len() - 1,
+                Some(0) | None => len - 1,
                 Some(i)        => i - 1,
             };
             app.peer_table_state.select(Some(next));
         }
         ActiveTab::Routes => {
-            if app.current_routes.is_empty() { return; }
+            if app.route_indices.is_empty() { return; }
+            let len = app.route_indices.len();
             let next = match app.route_table_state.selected() {
-                Some(0) | None => app.current_routes.len() - 1,
+                Some(0) | None => len - 1,
                 Some(i)        => i - 1,
             };
             app.route_table_state.select(Some(next));
@@ -1276,17 +1440,17 @@ fn navigate_down(app: &mut App) {
             app.reload_selected_router();
         }
         ActiveTab::Peers => {
-            if app.current_peers.is_empty() { return; }
+            if app.peer_indices.is_empty() { return; }
             let next = match app.peer_table_state.selected() {
-                Some(i) => (i + 1) % app.current_peers.len(),
+                Some(i) => (i + 1) % app.peer_indices.len(),
                 None    => 0,
             };
             app.peer_table_state.select(Some(next));
         }
         ActiveTab::Routes => {
-            if app.current_routes.is_empty() { return; }
+            if app.route_indices.is_empty() { return; }
             let next = match app.route_table_state.selected() {
-                Some(i) => (i + 1) % app.current_routes.len(),
+                Some(i) => (i + 1) % app.route_indices.len(),
                 None    => 0,
             };
             app.route_table_state.select(Some(next));

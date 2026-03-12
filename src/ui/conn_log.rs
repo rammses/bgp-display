@@ -28,7 +28,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 fn draw_log_list(f: &mut Frame, app: &mut App, area: Rect) {
     let items: Vec<ListItem> = if app.conn_logs.is_empty() {
         vec![ListItem::new(Span::styled(
-            "  No connectivity events yet — probes run every 5 s.",
+            "  No SSH events yet — probes run every 5 s.",
             Style::default().fg(C_DIM),
         ))]
     } else {
@@ -52,9 +52,9 @@ fn draw_log_list(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     let title = if app.conn_logs.is_empty() {
-        " Connectivity Log ".to_string()
+        " SSH Connectivity ".to_string()
     } else {
-        format!(" Connectivity Log ({} events) ", app.conn_logs.len())
+        format!(" SSH Connectivity ({} events) ", app.conn_logs.len())
     };
 
     let list = List::new(items)
