@@ -172,7 +172,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         .as_deref()
         .unwrap_or("Ready");
 
-    let keys = vec![
+    let mut keys: Vec<(&str, &str)> = vec![
         ("q", "Quit"),
         ("Tab", "Switch"),
         ("↑↓/jk", "Navigate"),
@@ -180,6 +180,12 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         ("p", "Projects"),
         ("1-7", "Jump tab"),
     ];
+
+    // Tab-specific hints
+    if app.current_tab == ActiveTab::Peers && app.peer_route_view.is_none() {
+        keys.push(("Enter", "Peer routes"));
+        keys.push(("/", "Filter"));
+    }
 
     let mut spans: Vec<Span> = vec![
         Span::styled(format!(" {status}  "), Style::default().fg(C_STATUS_OK)),
