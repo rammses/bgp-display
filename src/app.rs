@@ -203,6 +203,9 @@ pub struct App {
     // Background BGP refresh for all connected routers (~30 s)
     bgp_refresh_tick: u16,
 
+    // Debounced route-map SSH fetch — set in on_config_nav(), drained once per tick
+    routemap_fetch_queued: Option<String>,
+
     // Pending BGP update (deferred when user is actively on Config tab)
     pub pending_bgp_update:  Option<(Uuid, BgpSummary, String)>,
     pub pending_route_update: Option<(Uuid, Vec<BgpRoute>)>,
@@ -267,6 +270,7 @@ impl App {
             event_tx:          None,
             ping_tick:         0,
             bgp_refresh_tick:  0,
+            routemap_fetch_queued: None,
             pending_bgp_update:  None,
             pending_route_update: None,
             has_pending_update:  false,
@@ -471,11 +475,20 @@ impl App {
             self.ping_tick = 0;
             self.spawn_ping();
         }
-        // Refresh BGP data for all connected routers every ~30 s (150 ticks × 200 ms)
-        self.bgp_refresh_tick = self.bgp_refresh_tick.wrapping_add(1);
-        if self.bgp_refresh_tick >= 150 {
-            self.bgp_refresh_tick = 0;
-            self.spawn_bgp_fetch_all_connected();
+        // Refresh BGP data for all connected routers every ~30 s (150 ticks × 200 ms).
+        // Paused while user is on Config tab so background SSH fetches don't compete
+        // with the route-map fetches driving the right panel.
+        if self.current_tab != ActiveTab::Config {
+            self.bgp_refresh_tick = self.bgp_refresh_tick.wrapping_add(1);
+            if self.bgp_refresh_tick >= 150 {
+                self.bgp_refresh_tick = 0;
+                self.spawn_bgp_fetch_all_connected();
+            }
+        }
+
+        // Drain the debounced route-map fetch queue (at most one SSH call per tick).
+        if let Some(rm_name) = self.routemap_fetch_queued.take() {
+            self.spawn_routemap_fetch(rm_name);
         }
     }
 
@@ -722,11 +735,14 @@ impl App {
                 }
 
                 self.config_routemap = None;
-                self.spawn_routemap_fetch(rm_name);
+                // Queue the fetch — drained once per tick (200 ms) to prevent
+                // a storm of SSH calls when scrolling through config lines quickly.
+                self.routemap_fetch_queued = Some(rm_name);
             }
         } else {
             self.config_rm_name  = None;
             self.config_routemap = None;
+            self.routemap_fetch_queued = None;
         }
     }
 
@@ -1473,13 +1489,13 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
             app.current_tab = app.current_tab.prev();
         }
-        KeyCode::Char('1') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Dashboard; }
-        KeyCode::Char('2') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Peers; }
-        KeyCode::Char('3') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Routes; }
+        KeyCode::Char('1') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Dashboard; app.bgp_refresh_tick = 149; }
+        KeyCode::Char('2') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Peers; app.bgp_refresh_tick = 149; }
+        KeyCode::Char('3') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Routes; app.bgp_refresh_tick = 149; }
         KeyCode::Char('4') => app.current_tab = ActiveTab::Config,
-        KeyCode::Char('5') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Logs; }
-        KeyCode::Char('6') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Routers; }
-        KeyCode::Char('7') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::ConnLog; }
+        KeyCode::Char('5') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Logs; app.bgp_refresh_tick = 149; }
+        KeyCode::Char('6') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Routers; app.bgp_refresh_tick = 149; }
+        KeyCode::Char('7') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::ConnLog; app.bgp_refresh_tick = 149; }
 
         // ── Navigation ───────────────────────────────────────────────────────
         KeyCode::Up   | KeyCode::Char('k') => navigate_up(app),
