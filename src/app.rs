@@ -98,9 +98,9 @@ impl ActiveTab {
             ActiveTab::Peers     => "2 Peers",
             ActiveTab::Routes    => "3 Routes",
             ActiveTab::Config    => "4 Config",
-            ActiveTab::Logs      => "5 Logs",
+            ActiveTab::Logs      => "5 BGP Log",
             ActiveTab::Routers   => "6 Routers",
-            ActiveTab::ConnLog   => "7 ConnLog",
+            ActiveTab::ConnLog   => "7 SSH Log",
         }
     }
 }
@@ -508,8 +508,7 @@ impl App {
                 ConnectionStatus::Disconnected => format!("{name} went OFFLINE"),
                 _ => return,
             };
-            self.conn_log(msg.clone());
-            self.log(msg);
+            self.conn_log(msg);
         }
         self.router_status.insert(id, new_status);
 
@@ -708,7 +707,6 @@ impl App {
             .map(|r| r.name.clone())
             .unwrap_or_else(|| id.to_string());
         let msg = format!("{name}: BGP fetch failed — {err}");
-        self.conn_log(msg.clone());
         self.log(msg);
         self.router_status.insert(id, ConnectionStatus::Error(err));
     }
@@ -942,8 +940,7 @@ impl App {
                 // Auto-persist deletion to DB immediately
                 self.db_delete(removed.id);
                 let msg = format!("Router '{}' removed", removed.name);
-                self.conn_log(msg.clone());
-                self.log(msg);
+                self.conn_log(msg);
                 if self.routers.is_empty() {
                     self.editor_list_state.select(None);
                 } else {
@@ -996,7 +993,6 @@ impl App {
                     self.all_routers[apos] = draft.clone();
                 }
                 self.conn_log(format!("Router '{name}' updated"));
-                self.log(format!("Router '{name}' updated"));
             } else {
                 self.routers.push(draft.clone());
                 self.all_routers.push(draft.clone());
@@ -1006,7 +1002,6 @@ impl App {
                     self.router_list_state.select(Some(0));
                 }
                 self.conn_log(format!("Router '{name}' added"));
-                self.log(format!("Router '{name}' added"));
             }
             // Auto-persist to encrypted DB immediately
             self.db_upsert(&draft);
