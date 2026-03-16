@@ -864,6 +864,68 @@ impl App {
         self.log(format!("Peer routes error {ip}: {err}"));
     }
 
+    // ── Path-MTU probe ───────────────────────────────────────────────────────────
+
+    /// Spawn a background DF-bit ping from the selected router to `target`.
+    pub fn spawn_mtu_probe(&self, target: IpAddr) {
+        let Some(router) = self.selected_router().cloned() else { return };
+        let Some(tx)     = self.event_tx.clone()           else { return };
+        tokio::spawn(async move {
+            let result = match router.vendor {
+                RouterVendor::Cisco => {
+                    crate::router::cisco::CiscoBackend::new(&router).ping_mtu(target).await
+                }
+                RouterVendor::VyOs => {
+                    crate::router::vyos::VyOsBackend::new(&router).ping_mtu(target).await
+                }
+                RouterVendor::CitrixVpx => {
+                    crate::router::citrix::CitrixVpxBackend::new(&router).ping_mtu(target).await
+                }
+                RouterVendor::PfSense => {
+                    crate::router::pfsense::PfSenseBackend::new(&router).ping_mtu(target).await
+                }
+                RouterVendor::FortiGate => {
+                    crate::router::fortigate::FortiGateBackend::new(&router).ping_mtu(target).await
+                }
+            };
+            match result {
+                Ok(bytes) => { let _ = tx.send(AppEvent::MtuProbeResult(router.id, target, bytes)); }
+                Err(e)    => { let _ = tx.send(AppEvent::MtuProbeError(router.id, target, e.to_string())); }
+            }
+        });
+    }
+
+    /// Called when a path-MTU probe returns a result.
+    pub fn handle_mtu_probe_result(&mut self, _id: Uuid, ip: IpAddr, max_bytes: u16) {
+        use crate::bgp::MtuProbeState;
+        let state = if max_bytes >= 1500 {
+            MtuProbeState::Ok(max_bytes)
+        } else if max_bytes > 0 {
+            MtuProbeState::Degraded(max_bytes)
+        } else {
+            MtuProbeState::Failed("all probes failed".into())
+        };
+        if let Some(peer) = self.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
+            peer.mtu_probe = Some(state.clone());
+        }
+        let msg = match &state {
+            MtuProbeState::Ok(n)       => format!("MTU probe {ip}: OK (path MTU ≥ {n} B)"),
+            MtuProbeState::Degraded(n) => format!("MTU probe {ip}: degraded — max frame {n} B"),
+            MtuProbeState::Failed(e)   => format!("MTU probe {ip}: failed — {e}"),
+            MtuProbeState::Running     => unreachable!(),
+        };
+        self.set_status(msg);
+    }
+
+    /// Called when a path-MTU probe SSH call fails entirely.
+    pub fn handle_mtu_probe_error(&mut self, _id: Uuid, ip: IpAddr, err: String) {
+        if let Some(peer) = self.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
+            peer.mtu_probe = Some(crate::bgp::MtuProbeState::Failed(err.clone()));
+        }
+        self.log(format!("MTU probe error {ip}: {err}"));
+        self.set_status(format!("MTU probe to {ip} failed"));
+    }
+
     pub fn log(&mut self, msg: impl Into<String>) {
         let entry = format!(
             "[{}] {}",
@@ -1584,6 +1646,22 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         }
         KeyCode::Char('o') if app.current_tab == ActiveTab::Peers => {
             app.open_peer_route_view(crate::bgp::PeerRouteDirection::Advertised);
+        }
+
+        // ── Path-MTU probe (Peers tab) ──────────────────────────────────────
+        KeyCode::Char('m') if app.current_tab == ActiveTab::Peers => {
+            if let Some(ip) = app.peer_table_state.selected()
+                .and_then(|i| app.peer_indices.get(i))
+                .and_then(|&idx| app.current_peers.get(idx))
+                .map(|p| p.neighbor_ip)
+            {
+                // Mark Running immediately so the UI shows the spinner
+                if let Some(peer) = app.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
+                    peer.mtu_probe = Some(crate::bgp::MtuProbeState::Running);
+                }
+                app.spawn_mtu_probe(ip);
+                app.set_status(format!("Running MTU probe to {ip}…"));
+            }
         }
 
         _ => {}

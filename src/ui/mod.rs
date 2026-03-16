@@ -184,6 +184,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     // Tab-specific hints
     if app.current_tab == ActiveTab::Peers && app.peer_route_view.is_none() {
         keys.push(("Enter", "Peer routes"));
+        keys.push(("m", "MTU probe"));
         keys.push(("/", "Filter"));
     }
 

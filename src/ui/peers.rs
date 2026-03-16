@@ -1,6 +1,6 @@
 use crate::{
     app::{App, FilterMode},
-    bgp::{BgpState, PeerRouteDirection, RouteOrigin, RouteStatus},
+    bgp::{BgpState, MtuProbeState, PeerRouteDirection, RouteOrigin, RouteStatus},
     ui::{C_BORDER, C_DIM, C_EBGP, C_ESTABLISHED, C_HEADER, C_IBGP, C_SELECTED, C_WARN, fmt_num, state_style},
 };
 use ratatui::{
@@ -21,13 +21,13 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {    // Per-peer route dri
     let (table_area, filter_area, detail_area) = if app.peer_filter_mode != FilterMode::Off {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(7)])
+            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(12)])
             .split(area);
         (chunks[0], Some(chunks[1]), chunks[2])
     } else {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(7)])
+            .constraints([Constraint::Min(0), Constraint::Length(12)])
             .split(area);
         (chunks[0], None, chunks[1])
     };
@@ -198,6 +198,38 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
                 kv("  Upd-Src   ", p.update_source.map(|a| a.to_string()).unwrap_or_else(|| "—".into())),
                 Span::raw("   "),
                 kv("Communities ", p.communities.join(" ")),
+            ]),
+            Line::from(vec![
+                kv("  Resets    ", p.reset_count.to_string()),
+                Span::raw("   "),
+                kv("Notifs Sent ", p.notifs_sent.to_string()),
+                Span::raw("   "),
+                kv("Rcvd ", p.notifs_rcvd.to_string()),
+            ]),
+            {
+                let reason = p.last_reset_reason.clone().unwrap_or_else(|| "—".into());
+                Line::from(vec![
+                    Span::styled("  Last Reset  ", Style::default().fg(C_DIM)),
+                    Span::raw(reason),
+                ])
+            },
+            Line::from(vec![
+                kv("  BFD       ", {
+                    match p.bfd_state.as_deref() {
+                        Some(s) => s.to_string(),
+                        None    => "—".into(),
+                    }
+                }),
+                Span::raw("   "),
+                kv("MTU probe ", {
+                    match &p.mtu_probe {
+                        None                          => "— (m to probe)".into(),
+                        Some(MtuProbeState::Running)  => "⏳ running…".into(),
+                        Some(MtuProbeState::Ok(n))    => format!("✅ ≥{n} B"),
+                        Some(MtuProbeState::Degraded(n)) => format!("⚠️ {n} B (tunnel?)"),
+                        Some(MtuProbeState::Failed(e))   => format!("❌ {e}"),
+                    }
+                }),
             ]),
         ]
     } else {

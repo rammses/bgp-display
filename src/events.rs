@@ -25,6 +25,10 @@ pub enum AppEvent {
     PeerRoutes(Uuid, std::net::IpAddr, crate::bgp::PeerRouteDirection, Vec<crate::bgp::BgpRoute>),
     /// Per-peer routes fetch failed.
     PeerRoutesError(Uuid, std::net::IpAddr, crate::bgp::PeerRouteDirection, String),
+    /// Path-MTU probe result. The u16 is the max IP-frame size that succeeded (0 = all failed).
+    MtuProbeResult(Uuid, std::net::IpAddr, u16),
+    /// Path-MTU probe could not be executed (SSH error etc.).
+    MtuProbeError(Uuid, std::net::IpAddr, String),
 }
 
 // ─── Event Handler ────────────────────────────────────────────────────────────

@@ -181,6 +181,11 @@ impl CiscoBackend {
                 peer.password_configured  = d.password_configured;
                 if d.hold_time  > 0 { peer.hold_time  = d.hold_time;  }
                 if d.keepalive  > 0 { peer.keepalive   = d.keepalive;  }
+                peer.reset_count       = d.reset_count;
+                peer.last_reset_reason = d.last_reset_reason;
+                peer.notifs_sent       = d.notifs_sent;
+                peer.notifs_rcvd       = d.notifs_rcvd;
+                if d.bfd_state.is_some() { peer.bfd_state = d.bfd_state; }
             }
         }
 
@@ -217,7 +222,23 @@ impl CiscoBackend {
         let raw = self.ssh_run_or_vtysh(&cmd, "BGP neighbor is").await?;
         Ok(parse_neighbor_detail(&raw))
     }
+    // ── ping_mtu ─────────────────────────────────────────────────────────────────
+    //
+    // Cisco IOS DF-bit ping: tries 1500-byte frame first (payload 1472),
+    // then 1430 (common GRE/IPSec), then 576 (minimum).
+    // Returns the IP-total frame size that succeeded, or 0 if all failed.
 
+    pub async fn ping_mtu(&self, target: IpAddr) -> Result<u16> {
+        for payload in [1472u16, 1402, 548] {
+            let cmd = format!("ping {} repeat 3 df-bit size {}", target, payload);
+            let out = self.ssh_run(&cmd).await.unwrap_or_default();
+            // IOS outputs "!!!" (success) or "." (timeout) per probe
+            if out.contains('!') {
+                return Ok(payload + 28); // IP-frame = payload + 20 IP + 8 ICMP
+            }
+        }
+        Ok(0)
+    }
     // ── apply_config ──────────────────────────────────────────────────────────
 
     pub async fn apply_config(&mut self, _config: &str) -> Result<()> {
@@ -346,6 +367,11 @@ pub(crate) struct NeighborDetail {
     pub(crate) password_configured:    bool,
     pub(crate) hold_time:              u16,
     pub(crate) keepalive:              u16,
+    pub(crate) reset_count:            u32,
+    pub(crate) last_reset_reason:      Option<String>,
+    pub(crate) notifs_sent:            u32,
+    pub(crate) notifs_rcvd:            u32,
+    pub(crate) bfd_state:              Option<String>,
 }
 
 pub(crate) fn parse_neighbor_detail(output: &str) -> NeighborDetail {
@@ -407,6 +433,46 @@ pub(crate) fn parse_neighbor_detail(output: &str) -> NeighborDetail {
             if nums.len() >= 2 {
                 d.hold_time = nums[0];
                 d.keepalive = nums[1];
+            }
+        }
+        // Connections established 4; dropped 3
+        if trimmed.starts_with("Connections established") {
+            if let Some(pos) = trimmed.find("dropped ") {
+                d.reset_count = trimmed[pos + 8..]
+                    .split_whitespace().next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0);
+            }
+        }
+        // Last reset 00:03:12, due to BGP Notification sent, cease
+        if trimmed.starts_with("Last reset") {
+            if let Some(pos) = trimmed.find("due to ") {
+                d.last_reset_reason = Some(trimmed[pos + 7..].trim().to_string());
+            }
+        }
+        // 1 BGP notifications sent, 0 notifications received
+        if trimmed.contains("BGP notifications sent") || trimmed.contains("notifications sent") {
+            let nums: Vec<u32> = trimmed
+                .split(|c: char| !c.is_ascii_digit())
+                .filter(|s| !s.is_empty())
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if nums.len() >= 2 {
+                d.notifs_sent = nums[0];
+                d.notifs_rcvd = nums[1];
+            }
+        }
+        // BFD status: "BFD: state Active, ..." (IOS) or "BFD state: Up" (FRR)
+        if trimmed.starts_with("BFD") {
+            let lower = trimmed.to_lowercase();
+            if let Some(pos) = lower.find("state") {
+                let rest = trimmed[pos + 5..].trim_start_matches([':', ' ']);
+                if let Some(word) = rest.split_whitespace().next() {
+                    let s = word.trim_end_matches(',');
+                    if !s.is_empty() {
+                        d.bfd_state = Some(s.to_string());
+                    }
+                }
             }
         }
     }

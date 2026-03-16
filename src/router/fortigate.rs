@@ -266,7 +266,28 @@ impl FortiGateBackend {
         let raw = self.run_cli_pipeline(&[cmd_str.as_str()]).await?;
         Ok(parse_bgp_table(&raw))
     }
+    // ── ping_mtu ─────────────────────────────────────────────────────────────────
 
+    /// FortiOS `execute ping` with DF-bit option.
+    /// Returns IP-total frame size that succeeded, or 0 if all failed.
+    pub async fn ping_mtu(&self, target: IpAddr) -> Result<u16> {
+        for payload in [1472u16, 1402, 548] {
+            // FortiOS: set options then execute ping
+            let size_str  = payload.to_string();
+            let target_str = target.to_string();
+            let cmds = [
+                "execute ping-options repeat-count 3",
+                &format!("execute ping-options data-size {}", size_str),
+                "execute ping-options df-bit yes",
+                &format!("execute ping {}", target_str),
+            ];
+            let out = self.run_cli_pipeline(&cmds).await.unwrap_or_default();
+            if out.contains("min/avg/max") || out.contains(" 0% loss") {
+                return Ok(payload + 28);
+            }
+        }
+        Ok(0)
+    }
     // ── fetch_route_map_detail ────────────────────────────────────────────────
 
     pub async fn fetch_route_map_detail(

@@ -324,7 +324,21 @@ impl PfSenseBackend {
         };
         Ok(parse_neighbor_detail(&raw))
     }
+    // ── ping_mtu ─────────────────────────────────────────────────────────────────
 
+    /// FreeBSD DF-bit ping (`-D`): tries 1500-byte then 1430-byte frame.
+    /// Returns IP-total frame size that succeeded, or 0 if all failed.
+    pub async fn ping_mtu(&self, target: IpAddr) -> Result<u16> {
+        for payload in [1472u16, 1402, 548] {
+            // BSD ping: -D sets DF bit, -c count, -s payload size
+            let cmd = format!("ping -D -c 3 -s {} {}", payload, target);
+            let out = self.raw_ssh_run(&cmd).await.unwrap_or_default();
+            if out.contains(" 0% packet loss") || out.contains("bytes from") {
+                return Ok(payload + 28);
+            }
+        }
+        Ok(0)
+    }
     // ── apply_config ──────────────────────────────────────────────────────────
 
     pub async fn apply_config(&mut self, _config: &str) -> Result<()> {

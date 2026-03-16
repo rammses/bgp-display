@@ -56,6 +56,8 @@ async fn run_loop<B: ratatui::backend::Backend>(
             AppEvent::RouteMapDetail(id, d) => app.handle_routemap_detail(id, *d),
             AppEvent::PeerRoutes(id, ip, dir, routes) => app.handle_peer_routes(id, ip, dir, routes),
             AppEvent::PeerRoutesError(id, ip, dir, err) => app.handle_peer_routes_error(id, ip, dir, err),
+            AppEvent::MtuProbeResult(id, ip, max_bytes)  => app.handle_mtu_probe_result(id, ip, max_bytes),
+            AppEvent::MtuProbeError(id, ip, err)         => app.handle_mtu_probe_error(id, ip, err),
         }
 
         if app.should_quit {

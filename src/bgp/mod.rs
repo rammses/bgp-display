@@ -119,6 +119,21 @@ impl PeerRouteDirection {
     }
 }
 
+// ─── MTU probe state ────────────────────────────────────────────────────────
+
+/// State of an on-demand path-MTU probe launched with the `m` key.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum MtuProbeState {
+    /// Probe is in progress.
+    Running,
+    /// All probes at this frame size succeeded (path MTU ≥ n bytes, IP total).
+    Ok(u16),
+    /// Full-size probe failed; this smaller frame size worked (tunnel / IPSec path).
+    Degraded(u16),
+    /// All probes or SSH command failed.
+    Failed(String),
+}
+
 // ─── BGP Peer ─────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -142,6 +157,14 @@ pub struct BgpPeer {
     pub communities:            Vec<String>,
     pub route_map_in:           Option<String>,
     pub route_map_out:          Option<String>,
+    // ── Reliability fields (parsed from `show ip bgp neighbors`) ─────────────
+    pub reset_count:            u32,
+    pub last_reset_reason:      Option<String>,
+    pub notifs_sent:            u32,
+    pub notifs_rcvd:            u32,
+    pub bfd_state:              Option<String>,
+    /// On-demand path-MTU probe result (`m` key in Peers tab).
+    pub mtu_probe:              Option<MtuProbeState>,
 }
 
 impl BgpPeer {
@@ -297,6 +320,12 @@ pub fn parse_cisco_bgp_summary(
                 communities: vec![],
                 route_map_in: None,
                 route_map_out: None,
+                reset_count: 0,
+                last_reset_reason: None,
+                notifs_sent: 0,
+                notifs_rcvd: 0,
+                bfd_state: None,
+                mtu_probe: None,
             });
         }
     }

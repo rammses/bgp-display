@@ -306,7 +306,22 @@ impl VyOsBackend {
         bail!("could not fetch neighbor detail for {ip}")
     }
 
-    // ── apply_config ──────────────────────────────────────────────────────────
+    // ── ping_mtu ─────────────────────────────────────────────────────────────────
+
+    /// Linux DF-bit ping (`-M do`): tries 1500-byte then 1430-byte frame.
+    /// Returns IP-total frame size that succeeded, or 0 if all failed.
+    pub async fn ping_mtu(&self, target: IpAddr) -> Result<u16> {
+        for payload in [1472u16, 1402, 548] {
+            let cmd = format!("ping -c 3 -M do -s {} {}", payload, target);
+            let out = self.raw_ssh_run(&cmd).await.unwrap_or_default();
+            if out.contains(" 0% packet loss") || out.contains("bytes from") {
+                return Ok(payload + 28);
+            }
+        }
+        Ok(0)
+    }
+
+    // ── apply_config ─────────────────────────────────────────────────────────────────
 
     pub async fn apply_config(&mut self, _config: &str) -> anyhow::Result<()> {
         bail!("apply_config not yet implemented for VyOS backend");
