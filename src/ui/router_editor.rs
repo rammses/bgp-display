@@ -1,5 +1,5 @@
 use crate::{
-    app::{App, EditorMode, EDITOR_FIELDS, EDITOR_NFIELDS},
+    app::{App, EditorMode, EDITOR_FIELDS},
     router::ConnectionStatus,
     ui::{C_BORDER, C_DIM, C_ERROR, C_ESTABLISHED, C_HEADER, C_SELECTED, C_WARN},
 };
@@ -37,10 +37,10 @@ fn draw_router_list(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|r| {
             let (dot, dot_style) = match app.router_status.get(&r.id) {
-                Some(ConnectionStatus::Connected)    => ("●", Style::default().fg(C_ESTABLISHED)),
-                Some(ConnectionStatus::Connecting)   => ("◌", Style::default().fg(C_WARN)),
-                Some(ConnectionStatus::Error(_))     => ("✕", Style::default().fg(C_ERROR)),
-                _                                    => ("○", Style::default().fg(C_DIM)),
+                Some(ConnectionStatus::Connected) => ("●", Style::default().fg(C_ESTABLISHED)),
+                Some(ConnectionStatus::Connecting) => ("◌", Style::default().fg(C_WARN)),
+                Some(ConnectionStatus::Error(_)) => ("✕", Style::default().fg(C_ERROR)),
+                _ => ("○", Style::default().fg(C_DIM)),
             };
             let line = Line::from(vec![
                 Span::styled(dot, dot_style),
@@ -59,9 +59,7 @@ fn draw_router_list(f: &mut Frame, app: &mut App, area: Rect) {
                 .border_style(Style::default().fg(C_BORDER))
                 .title(Span::styled(title, Style::default().fg(C_HEADER))),
         )
-        .highlight_style(
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     f.render_stateful_widget(list, area, &mut app.editor_list_state);
@@ -71,15 +69,19 @@ fn draw_router_list(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn draw_edit_form(f: &mut Frame, app: &App, area: Rect) {
     let editing = app.editor_mode == EditorMode::EditField;
-    let draft   = app.editor_draft.as_ref();
+    let draft = app.editor_draft.as_ref();
 
-    let title = if editing { " ✎ Edit Router " } else { " Router Details " };
+    let title = if editing {
+        " ✎ Edit Router "
+    } else {
+        " Router Details "
+    };
 
     let mut lines: Vec<Line> = vec![Line::from("")];
 
     if let Some(d) = draft {
-        for i in 0..EDITOR_NFIELDS {
-            let label     = EDITOR_FIELDS[i];
+        for (i, field_label) in EDITOR_FIELDS.iter().enumerate() {
+            let label = *field_label;
             let is_active = editing && i == app.editor_field;
 
             let value: String = if is_active {
@@ -98,9 +100,11 @@ fn draw_edit_form(f: &mut Frame, app: &App, area: Rect) {
                     1 => d.hostname.clone(),
                     2 => d.ssh_port.to_string(),
                     3 => d.username.clone(),
-                    4 => d.password.as_ref()
-                            .map(|p| "●".repeat(p.len()))
-                            .unwrap_or_default(),
+                    4 => d
+                        .password
+                        .as_ref()
+                        .map(|p| "●".repeat(p.len()))
+                        .unwrap_or_default(),
                     5 => d.vendor.to_string(),
                     6 => d.vdom.clone().unwrap_or_default(),
                     _ => String::new(),
@@ -113,7 +117,9 @@ fn draw_edit_form(f: &mut Frame, app: &App, area: Rect) {
                 Style::default().fg(C_DIM)
             };
             let value_style = if is_active {
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(C_HEADER)
             };
@@ -175,17 +181,25 @@ fn draw_help_bar(f: &mut Frame, app: &App, area: Rect) {
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            key_span("Tab/Enter"), hint_span(":next field  "),
-            key_span("Shift-Tab"),  hint_span(":prev field  "),
-            key_span("Esc"),        hint_span(":cancel"),
+            key_span("Tab/Enter"),
+            hint_span(":next field  "),
+            key_span("Shift-Tab"),
+            hint_span(":prev field  "),
+            key_span("Esc"),
+            hint_span(":cancel"),
         ]
     } else {
         vec![
-            key_span("Enter"), hint_span(":edit  "),
-            key_span("a"),     hint_span(":add  "),
-            key_span("d"),     hint_span(":delete  "),
-            key_span("s"),     hint_span(":save to disk  "),
-            key_span("↑↓/jk"), hint_span(":select"),
+            key_span("Enter"),
+            hint_span(":edit  "),
+            key_span("a"),
+            hint_span(":add  "),
+            key_span("d"),
+            hint_span(":delete  "),
+            key_span("s"),
+            hint_span(":save to disk  "),
+            key_span("↑↓/jk"),
+            hint_span(":select"),
         ]
     };
 

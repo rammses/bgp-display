@@ -28,12 +28,7 @@ pub async fn cleanup_ssh_sessions(routers: &[RouterConfig]) {
         let target = format!("{}@{}", router.username, router.hostname);
         let port = router.ssh_port.to_string();
         let _ = tokio::process::Command::new("ssh")
-            .args([
-                "-O", "exit",
-                "-p", &port,
-                "-o", &control_path_arg,
-                &target,
-            ])
+            .args(["-O", "exit", "-p", &port, "-o", &control_path_arg, &target])
             .stderr(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .output()
@@ -51,9 +46,12 @@ pub async fn cleanup_mux_socket(username: &str, hostname: &str, port: u16) {
     let port_str = port.to_string();
     let _ = tokio::process::Command::new("ssh")
         .args([
-            "-O", "exit",
-            "-p", &port_str,
-            "-o", &control_path_arg,
+            "-O",
+            "exit",
+            "-p",
+            &port_str,
+            "-o",
+            &control_path_arg,
             &target,
         ])
         .stderr(std::process::Stdio::null())
@@ -85,10 +83,10 @@ pub enum RouterVendor {
 impl std::fmt::Display for RouterVendor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            RouterVendor::Cisco     => write!(f, "Cisco"),
-            RouterVendor::VyOs      => write!(f, "VyOs"),
+            RouterVendor::Cisco => write!(f, "Cisco"),
+            RouterVendor::VyOs => write!(f, "VyOs"),
             RouterVendor::CitrixVpx => write!(f, "CitrixVpx"),
-            RouterVendor::PfSense   => write!(f, "PfSense"),
+            RouterVendor::PfSense => write!(f, "PfSense"),
             RouterVendor::FortiGate => write!(f, "FortiGate"),
         }
     }
@@ -98,33 +96,33 @@ impl std::fmt::Display for RouterVendor {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouterConfig {
-    pub id:        Uuid,
-    pub name:      String,
-    pub hostname:  String,
-    pub vendor:    RouterVendor,
-    pub ssh_port:  u16,
-    pub username:  String,
+    pub id: Uuid,
+    pub name: String,
+    pub hostname: String,
+    pub vendor: RouterVendor,
+    pub ssh_port: u16,
+    pub username: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub password:  Option<String>,
-    pub local_as:  Option<u32>,
+    pub password: Option<String>,
+    pub local_as: Option<u32>,
     pub router_id: Option<IpAddr>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub vdom:      Option<String>,
+    pub vdom: Option<String>,
 }
 
 impl Default for RouterConfig {
     fn default() -> Self {
         Self {
-            id:        Uuid::new_v4(),
-            name:      "New Router".into(),
-            hostname:  "192.168.1.1".into(),
-            vendor:    RouterVendor::Cisco,
-            ssh_port:  22,
-            username:  "admin".into(),
-            password:  None,
-            local_as:  None,
+            id: Uuid::new_v4(),
+            name: "New Router".into(),
+            hostname: "192.168.1.1".into(),
+            vendor: RouterVendor::Cisco,
+            ssh_port: 22,
+            username: "admin".into(),
+            password: None,
+            local_as: None,
             router_id: None,
-            vdom:      None,
+            vdom: None,
         }
     }
 }
@@ -133,16 +131,16 @@ impl Default for RouterConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
-    pub id:         Uuid,
-    pub name:       String,
+    pub id: Uuid,
+    pub name: String,
     pub router_ids: Vec<Uuid>,
 }
 
 impl Project {
     pub fn new(name: impl Into<String>) -> Self {
         Self {
-            id:         Uuid::new_v4(),
-            name:       name.into(),
+            id: Uuid::new_v4(),
+            name: name.into(),
             router_ids: vec![],
         }
     }
@@ -162,9 +160,9 @@ impl std::fmt::Display for ConnectionStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ConnectionStatus::Disconnected => write!(f, "Disconnected"),
-            ConnectionStatus::Connecting   => write!(f, "Connecting…"),
-            ConnectionStatus::Connected    => write!(f, "Connected"),
-            ConnectionStatus::Error(e)     => write!(f, "Error: {e}"),
+            ConnectionStatus::Connecting => write!(f, "Connecting…"),
+            ConnectionStatus::Connected => write!(f, "Connected"),
+            ConnectionStatus::Error(e) => write!(f, "Error: {e}"),
         }
     }
 }
@@ -185,55 +183,55 @@ pub enum RouterBackend {
 impl RouterBackend {
     pub fn status(&self) -> &ConnectionStatus {
         match self {
-            RouterBackend::Cisco(b)     => b.status(),
-            RouterBackend::VyOs(b)      => b.status(),
+            RouterBackend::Cisco(b) => b.status(),
+            RouterBackend::VyOs(b) => b.status(),
             RouterBackend::CitrixVpx(b) => b.status(),
-            RouterBackend::PfSense(b)   => b.status(),
+            RouterBackend::PfSense(b) => b.status(),
         }
     }
 
     pub async fn connect(&mut self) -> anyhow::Result<()> {
         match self {
-            RouterBackend::Cisco(b)     => b.connect().await,
-            RouterBackend::VyOs(b)      => b.connect().await,
+            RouterBackend::Cisco(b) => b.connect().await,
+            RouterBackend::VyOs(b) => b.connect().await,
             RouterBackend::CitrixVpx(b) => b.connect().await,
-            RouterBackend::PfSense(b)   => b.connect().await,
+            RouterBackend::PfSense(b) => b.connect().await,
         }
     }
 
     pub async fn disconnect(&mut self) -> anyhow::Result<()> {
         match self {
-            RouterBackend::Cisco(b)     => b.disconnect().await,
-            RouterBackend::VyOs(b)      => b.disconnect().await,
+            RouterBackend::Cisco(b) => b.disconnect().await,
+            RouterBackend::VyOs(b) => b.disconnect().await,
             RouterBackend::CitrixVpx(b) => b.disconnect().await,
-            RouterBackend::PfSense(b)   => b.disconnect().await,
+            RouterBackend::PfSense(b) => b.disconnect().await,
         }
     }
 
     pub async fn refresh(&mut self) -> anyhow::Result<crate::bgp::BgpSummary> {
         match self {
-            RouterBackend::Cisco(b)     => b.refresh().await,
-            RouterBackend::VyOs(b)      => b.refresh().await,
+            RouterBackend::Cisco(b) => b.refresh().await,
+            RouterBackend::VyOs(b) => b.refresh().await,
             RouterBackend::CitrixVpx(b) => b.refresh().await,
-            RouterBackend::PfSense(b)   => b.refresh().await,
+            RouterBackend::PfSense(b) => b.refresh().await,
         }
     }
 
     pub async fn get_routes(&mut self) -> anyhow::Result<Vec<crate::bgp::BgpRoute>> {
         match self {
-            RouterBackend::Cisco(b)     => b.get_routes().await,
-            RouterBackend::VyOs(b)      => b.get_routes().await,
+            RouterBackend::Cisco(b) => b.get_routes().await,
+            RouterBackend::VyOs(b) => b.get_routes().await,
             RouterBackend::CitrixVpx(b) => b.get_routes().await,
-            RouterBackend::PfSense(b)   => b.get_routes().await,
+            RouterBackend::PfSense(b) => b.get_routes().await,
         }
     }
 
     pub async fn apply_config(&mut self, config: &str) -> anyhow::Result<()> {
         match self {
-            RouterBackend::Cisco(b)     => b.apply_config(config).await,
-            RouterBackend::VyOs(b)      => b.apply_config(config).await,
+            RouterBackend::Cisco(b) => b.apply_config(config).await,
+            RouterBackend::VyOs(b) => b.apply_config(config).await,
             RouterBackend::CitrixVpx(b) => b.apply_config(config).await,
-            RouterBackend::PfSense(b)   => b.apply_config(config).await,
+            RouterBackend::PfSense(b) => b.apply_config(config).await,
         }
     }
 }

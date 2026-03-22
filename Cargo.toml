@@ -30,5 +30,10 @@ argon2    = "0.5"
 rand      = "0.8"
 base64    = "0.22"
 
+# Structured logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+tracing-appender   = "0.2"
+
 [features]
 default   = []

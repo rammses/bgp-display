@@ -1,8 +1,10 @@
 use crate::{
     app::App,
     router::ConnectionStatus,
-    ui::{C_BORDER, C_DIM, C_ERROR, C_ESTABLISHED, C_HEADER, C_IBGP, C_EBGP,
-         C_SELECTED, C_WARN, fmt_num, state_style},
+    ui::{
+        fmt_num, state_style, C_BORDER, C_DIM, C_EBGP, C_ERROR, C_ESTABLISHED, C_HEADER, C_IBGP,
+        C_SELECTED, C_WARN,
+    },
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -32,10 +34,10 @@ fn draw_router_list(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|r| {
             let (dot, dot_style) = match app.router_status.get(&r.id) {
-                Some(ConnectionStatus::Connected)    => ("●", Style::default().fg(C_ESTABLISHED)),
-                Some(ConnectionStatus::Connecting)   => ("◌", Style::default().fg(C_WARN)),
-                Some(ConnectionStatus::Error(_))     => ("✕", Style::default().fg(C_ERROR)),
-                _                                    => ("○", Style::default().fg(C_DIM)),
+                Some(ConnectionStatus::Connected) => ("●", Style::default().fg(C_ESTABLISHED)),
+                Some(ConnectionStatus::Connecting) => ("◌", Style::default().fg(C_WARN)),
+                Some(ConnectionStatus::Error(_)) => ("✕", Style::default().fg(C_ERROR)),
+                _ => ("○", Style::default().fg(C_DIM)),
             };
 
             let line = Line::from(vec![
@@ -54,11 +56,7 @@ fn draw_router_list(f: &mut Frame, app: &mut App, area: Rect) {
                 .border_style(Style::default().fg(C_BORDER))
                 .title(Span::styled(" Routers ", Style::default().fg(C_HEADER))),
         )
-        .highlight_style(
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     f.render_stateful_widget(list, area, &mut app.router_list_state);
@@ -77,7 +75,7 @@ fn draw_router_summary(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn draw_summary_info(f: &mut Frame, app: &App, area: Rect) {
-    let router  = app.selected_router();
+    let router = app.selected_router();
     let summary = app.current_summary.as_ref();
 
     let mut lines: Vec<Line> = Vec::new();
@@ -99,12 +97,17 @@ fn draw_summary_info(f: &mut Frame, app: &App, area: Rect) {
             Span::raw("  Established  "),
             Span::styled(
                 s.established_count().to_string(),
-                Style::default().fg(C_ESTABLISHED).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(C_ESTABLISHED)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw(format!(" / {}", s.peers.len())),
         ]));
         lines.push(Line::from(kv("  Total Pfx  ", fmt_num(s.total_prefixes()))));
-        lines.push(Line::from(kv("  Fetched    ", s.fetched_at.format("%H:%M:%S UTC").to_string())));
+        lines.push(Line::from(kv(
+            "  Fetched    ",
+            s.fetched_at.format("%H:%M:%S UTC").to_string(),
+        )));
         lines.push(Line::from(sep));
         lines.push(Line::from(Span::styled(
             "  Press [2] for peer details  [3] for routes  [4] for config",
@@ -117,13 +120,12 @@ fn draw_summary_info(f: &mut Frame, app: &App, area: Rect) {
         )));
     }
 
-    let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(C_BORDER))
-                .title(Span::styled(" Summary ", Style::default().fg(C_HEADER))),
-        );
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(C_BORDER))
+            .title(Span::styled(" Summary ", Style::default().fg(C_HEADER))),
+    );
     f.render_widget(para, area);
 }
 
@@ -134,11 +136,11 @@ fn kv(key: &str, val: String) -> Span<'static> {
 fn draw_peer_sparkline(f: &mut Frame, app: &App, area: Rect) {
     let summary = match app.current_summary.as_ref() {
         Some(s) => s,
-        None    => return,
+        None => return,
     };
 
-    let total  = summary.peers.len();
-    let estab  = summary.established_count();
+    let total = summary.peers.len();
+    let estab = summary.established_count();
     // Build a simple bar chart per peer
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
@@ -154,11 +156,14 @@ fn draw_peer_sparkline(f: &mut Frame, app: &App, area: Rect) {
         };
 
         let ptype = peer.session_type();
-        let desc  = peer.description.as_deref().unwrap_or("");
+        let desc = peer.description.as_deref().unwrap_or("");
 
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(format!("{:<15}", peer.neighbor_ip), Style::default().fg(C_DIM)),
+            Span::styled(
+                format!("{:<15}", peer.neighbor_ip),
+                Style::default().fg(C_DIM),
+            ),
             Span::styled(format!("{:<5}", ptype), peer_type_style),
             Span::styled(
                 format!("{:<12}", peer.state.as_str()),
@@ -175,12 +180,12 @@ fn draw_peer_sparkline(f: &mut Frame, app: &App, area: Rect) {
 
     if total > 0 {
         let bar_width = (area.width.saturating_sub(20) as usize).min(40);
-        let filled    = (estab * bar_width) / total;
-        let empty     = bar_width - filled;
+        let filled = (estab * bar_width) / total;
+        let empty = bar_width - filled;
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled("▓".repeat(filled), Style::default().fg(C_ESTABLISHED)),
-            Span::styled("░".repeat(empty),  Style::default().fg(C_DIM)),
+            Span::styled("░".repeat(empty), Style::default().fg(C_DIM)),
             Span::raw(format!("  {estab}/{total} established")),
         ]));
     }
@@ -189,7 +194,10 @@ fn draw_peer_sparkline(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(C_BORDER))
-            .title(Span::styled(" Peer Overview ", Style::default().fg(C_HEADER))),
+            .title(Span::styled(
+                " Peer Overview ",
+                Style::default().fg(C_HEADER),
+            )),
     );
     f.render_widget(para, area);
 }

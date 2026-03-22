@@ -1,7 +1,10 @@
 use crate::{
     app::{App, FilterMode},
     bgp::{BgpState, MtuProbeState, PeerRouteDirection, RouteOrigin, RouteStatus},
-    ui::{C_BORDER, C_DIM, C_EBGP, C_ESTABLISHED, C_HEADER, C_IBGP, C_SELECTED, C_WARN, fmt_num, state_style},
+    ui::{
+        fmt_num, state_style, C_BORDER, C_DIM, C_EBGP, C_ESTABLISHED, C_HEADER, C_IBGP, C_SELECTED,
+        C_WARN,
+    },
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -13,15 +16,20 @@ use ratatui::{
 
 // ─── Peers tab ────────────────────────────────────────────────────────────────
 
-pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {    // Per-peer route drill-down replaces the normal view
+pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
+    // Per-peer route drill-down replaces the normal view
     if app.peer_route_view.is_some() {
         draw_peer_route_view(f, app, area);
         return;
-    }    // Split off a filter bar between table and detail when filter is active
+    } // Split off a filter bar between table and detail when filter is active
     let (table_area, filter_area, detail_area) = if app.peer_filter_mode != FilterMode::Off {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(12)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(3),
+                Constraint::Length(12),
+            ])
             .split(area);
         (chunks[0], Some(chunks[1]), chunks[2])
     } else {
@@ -34,7 +42,12 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {    // Per-peer route dri
 
     draw_peer_table(f, app, table_area);
     if let Some(fa) = filter_area {
-        draw_filter_bar(f, &app.peer_filter, app.peer_filter_mode == FilterMode::Typing, fa);
+        draw_filter_bar(
+            f,
+            &app.peer_filter,
+            app.peer_filter_mode == FilterMode::Typing,
+            fa,
+        );
     }
     draw_peer_detail(f, app, detail_area);
 }
@@ -90,13 +103,10 @@ fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
                 peer_state_cell(&peer.state),
                 Cell::from(peer.uptime.as_deref().unwrap_or("—").to_string()),
                 Cell::from(fmt_num(peer.prefixes_received)),
-                Cell::from(fmt_num(peer.prefixes_advertised)),                Cell::from(peer.route_map_in.as_deref().unwrap_or("—").to_string()),
-                Cell::from(peer.route_map_out.as_deref().unwrap_or("—").to_string()),                Cell::from(
-                    peer.description
-                        .as_deref()
-                        .unwrap_or("")
-                        .to_string(),
-                ),
+                Cell::from(fmt_num(peer.prefixes_advertised)),
+                Cell::from(peer.route_map_in.as_deref().unwrap_or("—").to_string()),
+                Cell::from(peer.route_map_out.as_deref().unwrap_or("—").to_string()),
+                Cell::from(peer.description.as_deref().unwrap_or("").to_string()),
             ])
             .height(1)
         })
@@ -112,14 +122,14 @@ fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
 
     let widths = [
         Constraint::Length(16),
-        Constraint::Length(10),
+        Constraint::Length(9),
         Constraint::Length(6),
         Constraint::Length(12),
         Constraint::Length(10),
-        Constraint::Length(8),
-        Constraint::Length(8),
-        Constraint::Length(14),
-        Constraint::Length(14),
+        Constraint::Length(7),
+        Constraint::Length(7),
+        Constraint::Length(20),
+        Constraint::Length(20),
         Constraint::Min(16),
     ];
 
@@ -151,7 +161,13 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
         .and_then(|&idx| app.current_peers.get(idx));
 
     let lines: Vec<Line> = if let Some(p) = peer {
-        let type_color = if p.remote_as == app.current_summary.as_ref().map(|s| s.local_as).unwrap_or(0) {
+        let type_color = if p.remote_as
+            == app
+                .current_summary
+                .as_ref()
+                .map(|s| s.local_as)
+                .unwrap_or(0)
+        {
             C_IBGP
         } else {
             C_EBGP
@@ -182,7 +198,14 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
                 Span::raw("   "),
                 kv("Keepalive ", format!("{}s", p.keepalive)),
                 Span::raw("   "),
-                kv("Auth ", if p.password_configured { "Yes".into() } else { "No".into() }),
+                kv(
+                    "Auth ",
+                    if p.password_configured {
+                        "Yes".into()
+                    } else {
+                        "No".into()
+                    },
+                ),
             ]),
             Line::from(vec![
                 kv("  NH-Self   ", bool_str(p.next_hop_self).to_string()),
@@ -190,12 +213,23 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
                 kv("RR-Client ", bool_str(p.route_reflector_client).to_string()),
             ]),
             Line::from(vec![
-                kv("  RM-In     ", p.route_map_in.clone().unwrap_or_else(|| "—".into())),
+                kv(
+                    "  RM-In     ",
+                    p.route_map_in.clone().unwrap_or_else(|| "—".into()),
+                ),
                 Span::raw("   "),
-                kv("RM-Out    ", p.route_map_out.clone().unwrap_or_else(|| "—".into())),
+                kv(
+                    "RM-Out    ",
+                    p.route_map_out.clone().unwrap_or_else(|| "—".into()),
+                ),
             ]),
             Line::from(vec![
-                kv("  Upd-Src   ", p.update_source.map(|a| a.to_string()).unwrap_or_else(|| "—".into())),
+                kv(
+                    "  Upd-Src   ",
+                    p.update_source
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                ),
                 Span::raw("   "),
                 kv("Communities ", p.communities.join(" ")),
             ]),
@@ -217,17 +251,17 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
                 kv("  BFD       ", {
                     match p.bfd_state.as_deref() {
                         Some(s) => s.to_string(),
-                        None    => "—".into(),
+                        None => "—".into(),
                     }
                 }),
                 Span::raw("   "),
                 kv("MTU probe ", {
                     match &p.mtu_probe {
-                        None                          => "— (m to probe)".into(),
-                        Some(MtuProbeState::Running)  => "⏳ running…".into(),
-                        Some(MtuProbeState::Ok(n))    => format!("✅ ≥{n} B"),
+                        None => "— (m to probe)".into(),
+                        Some(MtuProbeState::Running) => "⏳ running…".into(),
+                        Some(MtuProbeState::Ok(n)) => format!("✅ ≥{n} B"),
                         Some(MtuProbeState::Degraded(n)) => format!("⚠️ {n} B (tunnel?)"),
-                        Some(MtuProbeState::Failed(e))   => format!("❌ {e}"),
+                        Some(MtuProbeState::Failed(e)) => format!("❌ {e}"),
                     }
                 }),
             ]),
@@ -259,16 +293,29 @@ fn kv(key: &str, val: String) -> Span<'static> {
 }
 
 fn bool_str(b: bool) -> &'static str {
-    if b { "Yes" } else { "No" }
+    if b {
+        "Yes"
+    } else {
+        "No"
+    }
 }
 
 // ─── Filter bar ───────────────────────────────────────────────────────────────
 
 fn draw_filter_bar(f: &mut Frame, filter: &str, is_typing: bool, area: Rect) {
     let cursor = if is_typing { "▌" } else { "" };
-    let hint   = if is_typing { " Enter: apply  Esc: clear" } else { " /: edit  Esc: clear" };
+    let hint = if is_typing {
+        " Enter: apply  Esc: clear"
+    } else {
+        " /: edit  Esc: clear"
+    };
     let content = Line::from(vec![
-        Span::styled(format!(" / {filter}{cursor}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" / {filter}{cursor}"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(hint.to_string(), Style::default().fg(C_DIM)),
     ]);
     let border_style = if is_typing {
@@ -276,13 +323,12 @@ fn draw_filter_bar(f: &mut Frame, filter: &str, is_typing: bool, area: Rect) {
     } else {
         Style::default().fg(C_WARN)
     };
-    let para = Paragraph::new(content)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(Span::styled(" Filter ", Style::default().fg(C_SELECTED))),
-        );
+    let para = Paragraph::new(content).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(Span::styled(" Filter ", Style::default().fg(C_SELECTED))),
+    );
     f.render_widget(para, area);
 }
 
@@ -290,19 +336,21 @@ fn draw_filter_bar(f: &mut Frame, filter: &str, is_typing: bool, area: Rect) {
 
 fn route_status_style(s: &RouteStatus) -> Style {
     match s {
-        RouteStatus::BestExternal => Style::default().fg(C_ESTABLISHED).add_modifier(Modifier::BOLD),
-        RouteStatus::Best         => Style::default().fg(C_ESTABLISHED),
-        RouteStatus::Valid        => Style::default().fg(C_WARN),
-        RouteStatus::Internal     => Style::default().fg(Color::LightBlue),
-        RouteStatus::Suppressed   => Style::default().fg(C_DIM),
-        RouteStatus::History      => Style::default().fg(C_DIM),
+        RouteStatus::BestExternal => Style::default()
+            .fg(C_ESTABLISHED)
+            .add_modifier(Modifier::BOLD),
+        RouteStatus::Best => Style::default().fg(C_ESTABLISHED),
+        RouteStatus::Valid => Style::default().fg(C_WARN),
+        RouteStatus::Internal => Style::default().fg(Color::LightBlue),
+        RouteStatus::Suppressed => Style::default().fg(C_DIM),
+        RouteStatus::History => Style::default().fg(C_DIM),
     }
 }
 
 fn route_origin_style(o: &RouteOrigin) -> Style {
     match o {
-        RouteOrigin::Igp        => Style::default().fg(C_ESTABLISHED),
-        RouteOrigin::Egp        => Style::default().fg(C_WARN),
+        RouteOrigin::Igp => Style::default().fg(C_ESTABLISHED),
+        RouteOrigin::Egp => Style::default().fg(C_WARN),
         RouteOrigin::Incomplete => Style::default().fg(Color::Red),
     }
 }
@@ -310,12 +358,12 @@ fn route_origin_style(o: &RouteOrigin) -> Style {
 fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
     let view = match app.peer_route_view.as_ref() {
         Some(v) => v,
-        None    => return,
+        None => return,
     };
-    let peer_ip  = view.peer_ip;
-    let dir      = view.direction;
-    let routes   = view.routes.clone();
-    let error    = view.error.clone();
+    let peer_ip = view.peer_ip;
+    let dir = view.direction;
+    let routes = view.routes.clone();
+    let error = view.error.clone();
 
     // Table area + 1-line hint bar
     let chunks = Layout::default()
@@ -325,18 +373,28 @@ fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
 
     // ── Route table ───────────────────────────────────────────────────────────
     let count_str = match &routes {
-        Some(r) => format!(" {} prefix{}", r.len(), if r.len() == 1 { "" } else { "es" }),
-        None    => " fetching\u{2026}".to_string(),
+        Some(r) => format!(
+            " {} prefix{}",
+            r.len(),
+            if r.len() == 1 { "" } else { "es" }
+        ),
+        None => " fetching\u{2026}".to_string(),
     };
     let (rcv_label, adv_label) = if dir == PeerRouteDirection::Received {
         (
-            Span::styled(" [Received]", Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " [Received]",
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" [Advertised]", Style::default().fg(C_DIM)),
         )
     } else {
         (
             Span::styled(" [Received]", Style::default().fg(C_DIM)),
-            Span::styled(" [Advertised]", Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " [Advertised]",
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+            ),
         )
     };
 
@@ -361,33 +419,58 @@ fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
         vec![Row::new(vec![
             Cell::from(""),
             Cell::from(format!("Error: {err_msg}")).style(Style::default().fg(Color::Red)),
-            Cell::from(""), Cell::from(""), Cell::from(""),
-            Cell::from(""), Cell::from(""), Cell::from(""), Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
         ])]
     } else if routes.is_none() {
-        vec![]  // loading — empty rows, title says "fetching…"
+        vec![] // loading — empty rows, title says "fetching…"
     } else if route_list.is_empty() {
         vec![Row::new(vec![
             Cell::from(""),
-            Cell::from(format!("No {} routes for this peer", dir.label().to_lowercase()))
-                .style(Style::default().fg(C_DIM)),
-            Cell::from(""), Cell::from(""), Cell::from(""),
-            Cell::from(""), Cell::from(""), Cell::from(""), Cell::from(""),
+            Cell::from(format!(
+                "No {} routes for this peer",
+                dir.label().to_lowercase()
+            ))
+            .style(Style::default().fg(C_DIM)),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
+            Cell::from(""),
         ])]
     } else {
-        route_list.iter().map(|r: &crate::bgp::BgpRoute| {
-            Row::new(vec![
-                Cell::from(r.status.to_string()).style(route_status_style(&r.status)),
-                Cell::from(r.network.clone()),
-                Cell::from(r.next_hop.clone()),
-                Cell::from(r.local_pref.map(|lp: u32| lp.to_string()).unwrap_or_else(|| "—".into())),
-                Cell::from(r.metric.map(|m: u32| m.to_string()).unwrap_or_else(|| "—".into())),
-                Cell::from(r.weight.to_string()),
-                Cell::from(r.as_path_str()),
-                Cell::from(r.origin.to_string()).style(route_origin_style(&r.origin)),
-                Cell::from(r.communities.join(" ")),
-            ]).height(1)
-        }).collect()
+        route_list
+            .iter()
+            .map(|r: &crate::bgp::BgpRoute| {
+                Row::new(vec![
+                    Cell::from(r.status.to_string()).style(route_status_style(&r.status)),
+                    Cell::from(r.network.clone()),
+                    Cell::from(r.next_hop.clone()),
+                    Cell::from(
+                        r.local_pref
+                            .map(|lp: u32| lp.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                    ),
+                    Cell::from(
+                        r.metric
+                            .map(|m: u32| m.to_string())
+                            .unwrap_or_else(|| "—".into()),
+                    ),
+                    Cell::from(r.weight.to_string()),
+                    Cell::from(r.as_path_str()),
+                    Cell::from(r.origin.to_string()).style(route_origin_style(&r.origin)),
+                    Cell::from(r.communities.join(" ")),
+                ])
+                .height(1)
+            })
+            .collect()
     };
 
     let widths = [
@@ -426,15 +509,19 @@ fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
     // Mark direction labels on the top border via spans drawn over it
     // Draw direction tabs just inside the top border of chunks[0]
     let dir_area = Rect {
-        x:      chunks[0].x + 2,
-        y:      chunks[0].y,
-        width:  chunks[0].width.saturating_sub(4),
+        x: chunks[0].x + 2,
+        y: chunks[0].y,
+        width: chunks[0].width.saturating_sub(4),
         height: 1,
     };
     let dir_line = Line::from(vec![
-        Span::raw(" ".repeat(
-            format!(" Peer Routes — {}{} ", peer_ip, count_str).len().min(dir_area.width as usize / 2)
-        )),
+        Span::raw(
+            " ".repeat(
+                format!(" Peer Routes — {}{} ", peer_ip, count_str)
+                    .len()
+                    .min(dir_area.width as usize / 2),
+            ),
+        ),
         rcv_label,
         adv_label,
     ]);
@@ -442,17 +529,35 @@ fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
 
     // ── Hint bar ──────────────────────────────────────────────────────────────
     let hint = Line::from(vec![
-        Span::styled(" Enter/i", Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            " Enter/i",
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(":received  ", Style::default().fg(C_DIM)),
-        Span::styled("o", Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "o",
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(":advertised  ", Style::default().fg(C_DIM)),
-        Span::styled("Tab", Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Tab",
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(":toggle  ", Style::default().fg(C_DIM)),
-        Span::styled("r", Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "r",
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(":refresh  ", Style::default().fg(C_DIM)),
-        Span::styled("Esc", Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "Esc",
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(":back  ", Style::default().fg(C_DIM)),
-        Span::styled("↑↓/jk", Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "↑↓/jk",
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+        ),
         Span::styled(":navigate", Style::default().fg(C_DIM)),
     ]);
     f.render_widget(Paragraph::new(hint), chunks[1]);

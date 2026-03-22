@@ -142,6 +142,44 @@ Add, edit and delete routers. Each router has a **Vendor** field — press `Spac
 
 Timestamped history of every TCP reachability change for every router.
 
+### Diagnostics & Logging
+
+All diagnostic output is written to a **file log** (never to the terminal), located at:
+
+```
+~/.local/share/bgp-link-manager/logs/bgp-link-manager.log   # daily rotation
+```
+
+The log path is also shown in the BGP Log tab on startup.
+
+Control verbosity with the `BGP_LM_LOG` environment variable:
+
+```bash
+# Default (info) — SSH warm-up, router refreshes, health checks
+cargo run
+
+# Debug — every SSH command, fetch request, event routing
+BGP_LM_LOG=debug cargo run
+
+# Trace — per-frame draw timing, per-event handler timing
+BGP_LM_LOG=trace cargo run
+```
+
+**Lag detection** is built in. The log automatically emits warnings when:
+
+| Metric | Threshold | Log level |
+|--------|-----------|-----------|
+| UI draw time | > 16 ms (60 fps budget) | WARN |
+| Event handler time | > 5 ms | WARN |
+| SSH command time | > 10 s | WARN |
+| Data fetch time | > 15 s | WARN |
+
+To watch logs in real time while the app is running:
+
+```bash
+tail -f ~/.local/share/bgp-link-manager/logs/bgp-link-manager.log*
+```
+
 ### Key bindings
 
 | Key | Action |

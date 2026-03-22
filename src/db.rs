@@ -29,10 +29,54 @@ use uuid::Uuid;
 
 fn default_routers() -> Vec<RouterConfig> {
     vec![
-        RouterConfig { id: Uuid::new_v4(), name: "eqx-master".into(), hostname: "192.168.122.227".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None, vdom: None },
-        RouterConfig { id: Uuid::new_v4(), name: "eqx-slave".into(),  hostname: "192.168.122.187".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None, vdom: None },
-        RouterConfig { id: Uuid::new_v4(), name: "kkb-master".into(), hostname: "192.168.122.184".into(), vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None, vdom: None },
-        RouterConfig { id: Uuid::new_v4(), name: "kkb-slave".into(),  hostname: "192.168.122.34".into(),  vendor: RouterVendor::Cisco, ssh_port: 22, username: "admin".into(), password: None, local_as: None, router_id: None, vdom: None },
+        RouterConfig {
+            id: Uuid::new_v4(),
+            name: "eqx-master".into(),
+            hostname: "192.168.122.227".into(),
+            vendor: RouterVendor::Cisco,
+            ssh_port: 22,
+            username: "admin".into(),
+            password: None,
+            local_as: None,
+            router_id: None,
+            vdom: None,
+        },
+        RouterConfig {
+            id: Uuid::new_v4(),
+            name: "eqx-slave".into(),
+            hostname: "192.168.122.187".into(),
+            vendor: RouterVendor::Cisco,
+            ssh_port: 22,
+            username: "admin".into(),
+            password: None,
+            local_as: None,
+            router_id: None,
+            vdom: None,
+        },
+        RouterConfig {
+            id: Uuid::new_v4(),
+            name: "kkb-master".into(),
+            hostname: "192.168.122.184".into(),
+            vendor: RouterVendor::Cisco,
+            ssh_port: 22,
+            username: "admin".into(),
+            password: None,
+            local_as: None,
+            router_id: None,
+            vdom: None,
+        },
+        RouterConfig {
+            id: Uuid::new_v4(),
+            name: "kkb-slave".into(),
+            hostname: "192.168.122.34".into(),
+            vendor: RouterVendor::Cisco,
+            ssh_port: 22,
+            username: "admin".into(),
+            password: None,
+            local_as: None,
+            router_id: None,
+            vdom: None,
+        },
     ]
 }
 
@@ -50,11 +94,11 @@ fn derive_key(passphrase: &str, salt_b64: &str) -> Result<[u8; 32]> {
 
 /// Encrypt plaintext → base64(nonce || ciphertext).
 fn encrypt(key_bytes: &[u8; 32], plaintext: &str) -> Result<String> {
-    let key    = Key::<Aes256Gcm>::from_slice(key_bytes);
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
     let cipher = Aes256Gcm::new(key);
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce      = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext.as_bytes())
         .map_err(|e| anyhow::anyhow!("encrypt error: {e}"))?;
@@ -70,10 +114,10 @@ fn decrypt(key_bytes: &[u8; 32], b64: &str) -> Result<String> {
         bail!("blob too short");
     }
     let (nonce_bytes, ciphertext) = blob.split_at(12);
-    let key    = Key::<Aes256Gcm>::from_slice(key_bytes);
+    let key = Key::<Aes256Gcm>::from_slice(key_bytes);
     let cipher = Aes256Gcm::new(key);
-    let nonce  = Nonce::from_slice(nonce_bytes);
-    let plain  = cipher
+    let nonce = Nonce::from_slice(nonce_bytes);
+    let plain = cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| anyhow::anyhow!("decryption failed — wrong passphrase?"))?;
     String::from_utf8(plain).context("decrypted password not utf-8")
@@ -82,8 +126,8 @@ fn decrypt(key_bytes: &[u8; 32], b64: &str) -> Result<String> {
 // ─── Database ─────────────────────────────────────────────────────────────────
 
 pub struct RouterDb {
-    conn:    Connection,
-    key:     [u8; 32],
+    conn: Connection,
+    key: [u8; 32],
 }
 
 impl RouterDb {
@@ -103,8 +147,8 @@ impl RouterDb {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let conn = Connection::open(&path)
-            .with_context(|| format!("opening db at {}", path.display()))?;
+        let conn =
+            Connection::open(&path).with_context(|| format!("opening db at {}", path.display()))?;
 
         // Create tables
         conn.execute_batch(
@@ -173,8 +217,8 @@ impl RouterDb {
             }
             // Create a default project containing all seeded routers
             let project = crate::router::Project {
-                id:         uuid::Uuid::new_v4(),
-                name:       "midas-dev".into(),
+                id: uuid::Uuid::new_v4(),
+                name: "midas-dev".into(),
                 router_ids: routers.iter().map(|r| r.id).collect(),
             };
             db.upsert_project(&project)?;
@@ -194,27 +238,37 @@ impl RouterDb {
 
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,              // id
-                row.get::<_, String>(1)?,              // name
-                row.get::<_, String>(2)?,              // hostname
-                row.get::<_, String>(3)?,              // vendor
-                row.get::<_, u16>(4)?,                 // ssh_port
-                row.get::<_, String>(5)?,              // username
-                row.get::<_, Option<String>>(6)?,      // password_enc
-                row.get::<_, Option<u32>>(7)?,         // local_as
-                row.get::<_, Option<String>>(8)?,      // router_id
-                row.get::<_, Option<String>>(9)?,      // vdom
+                row.get::<_, String>(0)?,         // id
+                row.get::<_, String>(1)?,         // name
+                row.get::<_, String>(2)?,         // hostname
+                row.get::<_, String>(3)?,         // vendor
+                row.get::<_, u16>(4)?,            // ssh_port
+                row.get::<_, String>(5)?,         // username
+                row.get::<_, Option<String>>(6)?, // password_enc
+                row.get::<_, Option<u32>>(7)?,    // local_as
+                row.get::<_, Option<String>>(8)?, // router_id
+                row.get::<_, Option<String>>(9)?, // vdom
             ))
         })?;
 
         let mut routers = Vec::new();
         for row in rows {
-            let (id_s, name, hostname, vendor_s, ssh_port, username,
-                 password_enc, local_as, router_id_s, vdom) = row?;
+            let (
+                id_s,
+                name,
+                hostname,
+                vendor_s,
+                ssh_port,
+                username,
+                password_enc,
+                local_as,
+                router_id_s,
+                vdom,
+            ) = row?;
 
             let password = if let Some(enc) = password_enc {
                 match decrypt(&self.key, &enc) {
-                    Ok(p)  => Some(p),
+                    Ok(p) => Some(p),
                     Err(e) => {
                         eprintln!("warn: could not decrypt password for {name}: {e}");
                         None
@@ -227,11 +281,11 @@ impl RouterDb {
             let id: uuid::Uuid = id_s.parse().unwrap_or_else(|_| uuid::Uuid::new_v4());
             let router_id = router_id_s.and_then(|s| s.parse().ok());
             let vendor = match vendor_s.to_lowercase().as_str() {
-                "vyos"               => RouterVendor::VyOs,
+                "vyos" => RouterVendor::VyOs,
                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
-                "pfsense"            => RouterVendor::PfSense,
-                "fortigate"          => RouterVendor::FortiGate,
-                _                    => RouterVendor::Cisco,
+                "pfsense" => RouterVendor::PfSense,
+                "fortigate" => RouterVendor::FortiGate,
+                _ => RouterVendor::Cisco,
             };
 
             routers.push(RouterConfig {
@@ -289,25 +343,19 @@ impl RouterDb {
     }
 
     pub fn delete(&self, id: uuid::Uuid) -> Result<()> {
-        self.conn.execute(
-            "DELETE FROM routers WHERE id = ?1",
-            params![id.to_string()],
-        )?;
+        self.conn
+            .execute("DELETE FROM routers WHERE id = ?1", params![id.to_string()])?;
         Ok(())
     }
-
 
     // ── Project CRUD ──────────────────────────────────────────────────────────
 
     pub fn load_projects(&self) -> Result<Vec<crate::router::Project>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name FROM projects ORDER BY rowid",
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name FROM projects ORDER BY rowid")?;
         let rows = stmt.query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-            ))
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?;
 
         let mut projects = Vec::new();
@@ -315,14 +363,19 @@ impl RouterDb {
             let (id_s, name) = row?;
             let id: uuid::Uuid = id_s.parse().unwrap_or_else(|_| uuid::Uuid::new_v4());
 
-            let mut rstmt = self.conn.prepare(
-                "SELECT router_id FROM project_routers WHERE project_id = ?1",
-            )?;
-            let rids: Vec<uuid::Uuid> = rstmt.query_map(params![id_s], |r| {
-                r.get::<_, String>(0)
-            })?.filter_map(|r| r.ok().and_then(|s| s.parse().ok())).collect();
+            let mut rstmt = self
+                .conn
+                .prepare("SELECT router_id FROM project_routers WHERE project_id = ?1")?;
+            let rids: Vec<uuid::Uuid> = rstmt
+                .query_map(params![id_s], |r| r.get::<_, String>(0))?
+                .filter_map(|r| r.ok().and_then(|s| s.parse().ok()))
+                .collect();
 
-            projects.push(crate::router::Project { id, name, router_ids: rids });
+            projects.push(crate::router::Project {
+                id,
+                name,
+                router_ids: rids,
+            });
         }
         Ok(projects)
     }
@@ -350,8 +403,12 @@ impl RouterDb {
 
     pub fn delete_project(&self, id: uuid::Uuid) -> Result<()> {
         let id_s = id.to_string();
-        self.conn.execute("DELETE FROM project_routers WHERE project_id = ?1", params![id_s])?;
-        self.conn.execute("DELETE FROM projects WHERE id = ?1", params![id_s])?;
+        self.conn.execute(
+            "DELETE FROM project_routers WHERE project_id = ?1",
+            params![id_s],
+        )?;
+        self.conn
+            .execute("DELETE FROM projects WHERE id = ?1", params![id_s])?;
         Ok(())
     }
 }

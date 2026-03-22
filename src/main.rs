@@ -3,7 +3,10 @@ mod bgp;
 mod config;
 mod db;
 mod events;
+mod fetch;
+mod logging;
 mod router;
+mod ssh;
 mod tui;
 mod ui;
 
@@ -11,8 +14,16 @@ use anyhow::Result;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let _log_guard = logging::init();
+
     let passphrase = read_passphrase()?;
     let (cfg, router_db) = config::AppConfig::load_with_key(&passphrase)?;
+    tracing::info!(
+        routers = cfg.routers.len(),
+        projects = cfg.projects.len(),
+        "config loaded"
+    );
+
     let mut app = app::App::new(cfg, router_db);
     tui::run_tui(&mut app).await
 }
@@ -85,7 +96,7 @@ fn read_passphrase() -> Result<String> {
                     Constraint::Length(1), // label
                     Constraint::Length(3), // input box
                     Constraint::Length(1), // error / hint
-                    Constraint::Min(0),   // rest
+                    Constraint::Min(0),    // rest
                 ])
                 .split(centered_inner(dialog_area, 1, 2));
 
@@ -95,7 +106,9 @@ fn read_passphrase() -> Result<String> {
                 .border_style(Style::default().fg(Color::Cyan))
                 .title(Span::styled(
                     " BGP Link Manager ",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ))
                 .title_alignment(Alignment::Center);
             f.render_widget(border, dialog_area);
@@ -104,7 +117,9 @@ fn read_passphrase() -> Result<String> {
             let title = Paragraph::new(Line::from(vec![
                 Span::styled(
                     "BGP Link Manager",
-                    Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" v0.1.0", Style::default().fg(Color::DarkGray)),
             ]))
@@ -139,7 +154,9 @@ fn read_passphrase() -> Result<String> {
             let input_text = format!(" {dots}▌");
             let input = Paragraph::new(Line::from(Span::styled(
                 &input_text,
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             )))
             .block(
                 Block::default()
@@ -166,7 +183,10 @@ fn read_passphrase() -> Result<String> {
             }
         })?;
 
-        if let Event::Key(KeyEvent { code, modifiers, .. }) = read()? {
+        if let Event::Key(KeyEvent {
+            code, modifiers, ..
+        }) = read()?
+        {
             error_msg = None;
             match code {
                 KeyCode::Enter => {
@@ -183,7 +203,9 @@ fn read_passphrase() -> Result<String> {
                     break Err(anyhow::anyhow!("Cancelled"));
                 }
                 KeyCode::Char(c) => buf.push(c),
-                KeyCode::Backspace => { buf.pop(); }
+                KeyCode::Backspace => {
+                    buf.pop();
+                }
                 _ => {}
             }
         }
@@ -198,11 +220,15 @@ fn read_passphrase() -> Result<String> {
 }
 
 /// Shrink a Rect by margin_x columns and margin_y rows on each side.
-fn centered_inner(area: ratatui::layout::Rect, margin_y: u16, margin_x: u16) -> ratatui::layout::Rect {
+fn centered_inner(
+    area: ratatui::layout::Rect,
+    margin_y: u16,
+    margin_x: u16,
+) -> ratatui::layout::Rect {
     ratatui::layout::Rect {
-        x:      area.x + margin_x,
-        y:      area.y + margin_y,
-        width:  area.width.saturating_sub(margin_x * 2),
+        x: area.x + margin_x,
+        y: area.y + margin_y,
+        width: area.width.saturating_sub(margin_x * 2),
         height: area.height.saturating_sub(margin_y * 2),
     }
 }

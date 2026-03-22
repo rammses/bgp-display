@@ -18,7 +18,11 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     let (table_area, filter_area, detail_area) = if app.route_filter_mode != FilterMode::Off {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(5)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(3),
+                Constraint::Length(5),
+            ])
             .split(area);
         (chunks[0], Some(chunks[1]), chunks[2])
     } else {
@@ -31,7 +35,12 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
     draw_route_table(f, app, table_area);
     if let Some(fa) = filter_area {
-        draw_filter_bar(f, &app.route_filter, app.route_filter_mode == FilterMode::Typing, fa);
+        draw_filter_bar(
+            f,
+            &app.route_filter,
+            app.route_filter_mode == FilterMode::Typing,
+            fa,
+        );
     }
     draw_route_detail(f, app, detail_area);
 }
@@ -40,19 +49,21 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn status_style(s: &RouteStatus) -> Style {
     match s {
-        RouteStatus::BestExternal => Style::default().fg(C_ESTABLISHED).add_modifier(Modifier::BOLD),
-        RouteStatus::Best         => Style::default().fg(C_ESTABLISHED),
-        RouteStatus::Valid        => Style::default().fg(C_WARN),
-        RouteStatus::Internal     => Style::default().fg(Color::LightBlue),
-        RouteStatus::Suppressed   => Style::default().fg(C_DIM),
-        RouteStatus::History      => Style::default().fg(C_DIM),
+        RouteStatus::BestExternal => Style::default()
+            .fg(C_ESTABLISHED)
+            .add_modifier(Modifier::BOLD),
+        RouteStatus::Best => Style::default().fg(C_ESTABLISHED),
+        RouteStatus::Valid => Style::default().fg(C_WARN),
+        RouteStatus::Internal => Style::default().fg(Color::LightBlue),
+        RouteStatus::Suppressed => Style::default().fg(C_DIM),
+        RouteStatus::History => Style::default().fg(C_DIM),
     }
 }
 
 fn origin_style(o: &RouteOrigin) -> Style {
     match o {
-        RouteOrigin::Igp        => Style::default().fg(C_ESTABLISHED),
-        RouteOrigin::Egp        => Style::default().fg(C_WARN),
+        RouteOrigin::Igp => Style::default().fg(C_ESTABLISHED),
+        RouteOrigin::Egp => Style::default().fg(C_WARN),
         RouteOrigin::Incomplete => Style::default().fg(Color::Red),
     }
 }
@@ -87,12 +98,14 @@ fn draw_route_table(f: &mut Frame, app: &mut App, area: Rect) {
                 Cell::from(route.network.clone()),
                 Cell::from(route.next_hop.clone()),
                 Cell::from(
-                    route.local_pref
+                    route
+                        .local_pref
                         .map(|lp| lp.to_string())
                         .unwrap_or_else(|| "—".into()),
                 ),
                 Cell::from(
-                    route.metric
+                    route
+                        .metric
                         .map(|m| m.to_string())
                         .unwrap_or_else(|| "—".into()),
                 ),
@@ -165,9 +178,19 @@ fn draw_route_detail(f: &mut Frame, app: &App, area: Rect) {
             ]),
             Line::from(vec![
                 Span::raw("  "),
-                kv("Local Pref ", r.local_pref.map(|n| n.to_string()).unwrap_or_else(|| "—".into())),
+                kv(
+                    "Local Pref ",
+                    r.local_pref
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                ),
                 Span::raw("   "),
-                kv("MED ", r.metric.map(|n| n.to_string()).unwrap_or_else(|| "—".into())),
+                kv(
+                    "MED ",
+                    r.metric
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "—".into()),
+                ),
                 Span::raw("   "),
                 kv("Weight ", r.weight.to_string()),
             ]),
@@ -206,9 +229,18 @@ fn kv(key: &str, val: String) -> Span<'static> {
 
 fn draw_filter_bar(f: &mut Frame, filter: &str, is_typing: bool, area: Rect) {
     let cursor = if is_typing { "▌" } else { "" };
-    let hint   = if is_typing { " Enter: apply  Esc: clear" } else { " /: edit  Esc: clear" };
+    let hint = if is_typing {
+        " Enter: apply  Esc: clear"
+    } else {
+        " /: edit  Esc: clear"
+    };
     let content = Line::from(vec![
-        Span::styled(format!(" / {filter}{cursor}"), Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" / {filter}{cursor}"),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::styled(hint.to_string(), Style::default().fg(C_DIM)),
     ]);
     let border_style = if is_typing {
@@ -216,12 +248,11 @@ fn draw_filter_bar(f: &mut Frame, filter: &str, is_typing: bool, area: Rect) {
     } else {
         Style::default().fg(C_WARN)
     };
-    let para = Paragraph::new(content)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style)
-                .title(Span::styled(" Filter ", Style::default().fg(C_SELECTED))),
-        );
+    let para = Paragraph::new(content).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(border_style)
+            .title(Span::styled(" Filter ", Style::default().fg(C_SELECTED))),
+    );
     f.render_widget(para, area);
 }

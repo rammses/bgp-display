@@ -18,17 +18,17 @@ use ratatui::{
 
 // ─── Colour palette ───────────────────────────────────────────────────────────
 
-pub const C_TITLE:      Color = Color::Cyan;
-pub const C_SELECTED:   Color = Color::Yellow;
-pub const C_BORDER:     Color = Color::DarkGray;
-pub const C_HEADER:     Color = Color::Cyan;
-pub const C_ESTABLISHED:Color = Color::Green;
-pub const C_WARN:       Color = Color::Yellow;
-pub const C_ERROR:      Color = Color::Red;
-pub const C_IBGP:       Color = Color::LightBlue;
-pub const C_EBGP:       Color = Color::Magenta;
-pub const C_STATUS_OK:  Color = Color::Green;
-pub const C_DIM:        Color = Color::DarkGray;
+pub const C_TITLE: Color = Color::Cyan;
+pub const C_SELECTED: Color = Color::Yellow;
+pub const C_BORDER: Color = Color::DarkGray;
+pub const C_HEADER: Color = Color::Cyan;
+pub const C_ESTABLISHED: Color = Color::Green;
+pub const C_WARN: Color = Color::Yellow;
+pub const C_ERROR: Color = Color::Red;
+pub const C_IBGP: Color = Color::LightBlue;
+pub const C_EBGP: Color = Color::Magenta;
+pub const C_STATUS_OK: Color = Color::Green;
+pub const C_DIM: Color = Color::DarkGray;
 
 // ─── Top-level draw ───────────────────────────────────────────────────────────
 
@@ -61,20 +61,20 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
 
     // Build AS / Router-ID info from selected router
     let (as_info, conn_info) = if let Some(r) = app.selected_router() {
-        let as_str   = r.local_as.map(|a| format!("AS {a}")).unwrap_or_default();
+        let as_str = r.local_as.map(|a| format!("AS {a}")).unwrap_or_default();
         let conn_str = app.connection_status().to_string();
         (as_str, conn_str)
     } else {
         (String::new(), String::new())
     };
 
-    let title_style  = Style::default().fg(C_TITLE).add_modifier(Modifier::BOLD);
-    let right_style  = Style::default().fg(C_DIM);
+    let title_style = Style::default().fg(C_TITLE).add_modifier(Modifier::BOLD);
+    let right_style = Style::default().fg(C_DIM);
     let status_style = match app.connection_status() {
-        crate::router::ConnectionStatus::Connected     => Style::default().fg(C_STATUS_OK),
-        crate::router::ConnectionStatus::Connecting    => Style::default().fg(C_WARN),
-        crate::router::ConnectionStatus::Disconnected  => Style::default().fg(C_DIM),
-        crate::router::ConnectionStatus::Error(_)      => Style::default().fg(C_ERROR),
+        crate::router::ConnectionStatus::Connected => Style::default().fg(C_STATUS_OK),
+        crate::router::ConnectionStatus::Connecting => Style::default().fg(C_WARN),
+        crate::router::ConnectionStatus::Disconnected => Style::default().fg(C_DIM),
+        crate::router::ConnectionStatus::Error(_) => Style::default().fg(C_ERROR),
     };
 
     let title = Line::from(vec![
@@ -93,9 +93,7 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
         Span::styled(&conn_info, status_style),
     ]);
 
-    let time_line = Line::from(vec![
-        Span::styled(now, right_style),
-    ]);
+    let time_line = Line::from(vec![Span::styled(now, right_style)]);
 
     // Two sub-columns: title left, time right
     let inner = Layout::default()
@@ -108,18 +106,17 @@ fn draw_title(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(C_TITLE))
         .title(Span::styled(" bgp-link-manager ", title_style));
 
-    let status_para = ratatui::widgets::Paragraph::new(title)
-        .block(block);
+    let status_para = ratatui::widgets::Paragraph::new(title).block(block);
     f.render_widget(status_para, area);
 
     // Overlay time in top-right corner, no block
-    let time_para = ratatui::widgets::Paragraph::new(time_line)
-        .alignment(ratatui::layout::Alignment::Right);
+    let time_para =
+        ratatui::widgets::Paragraph::new(time_line).alignment(ratatui::layout::Alignment::Right);
     // Draw inside the border area
     let inner_area = Rect {
-        x:      inner[1].x,
-        y:      area.y + 1,
-        width:  inner[1].width.saturating_sub(2),
+        x: inner[1].x,
+        y: area.y + 1,
+        width: inner[1].width.saturating_sub(2),
         height: 1,
     };
     f.render_widget(time_para, inner_area);
@@ -140,11 +137,7 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(C_BORDER)),
         )
-        .highlight_style(
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))
         .divider(Span::styled(" │ ", Style::default().fg(C_BORDER)));
 
     f.render_widget(tabs, area);
@@ -155,22 +148,19 @@ fn draw_tabs(f: &mut Frame, app: &App, area: Rect) {
 fn draw_content(f: &mut Frame, app: &mut App, area: Rect) {
     match app.current_tab {
         ActiveTab::Dashboard => dashboard::draw(f, app, area),
-        ActiveTab::Peers     => peers::draw(f, app, area),
-        ActiveTab::Routes    => routes::draw(f, app, area),
-        ActiveTab::Config    => config_tab::draw(f, app, area),
-        ActiveTab::Logs      => logs::draw(f, app, area),
-        ActiveTab::Routers   => router_editor::draw(f, app, area),
-        ActiveTab::ConnLog   => conn_log::draw(f, app, area),
+        ActiveTab::Peers => peers::draw(f, app, area),
+        ActiveTab::Routes => routes::draw(f, app, area),
+        ActiveTab::Config => config_tab::draw(f, app, area),
+        ActiveTab::Logs => logs::draw(f, app, area),
+        ActiveTab::Routers => router_editor::draw(f, app, area),
+        ActiveTab::ConnLog => conn_log::draw(f, app, area),
     }
 }
 
 // ─── Help bar ─────────────────────────────────────────────────────────────────
 
 fn draw_help(f: &mut Frame, app: &App, area: Rect) {
-    let status = app
-        .status_message
-        .as_deref()
-        .unwrap_or("Ready");
+    let status = app.status_message.as_deref().unwrap_or("Ready");
 
     let mut keys: Vec<(&str, &str)> = vec![
         ("q", "Quit"),
@@ -194,16 +184,21 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
     ];
 
     for (key, desc) in &keys {
-        spans.push(Span::styled(*key, Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)));
-        spans.push(Span::styled(format!(":{desc}  "), Style::default().fg(C_DIM)));
+        spans.push(Span::styled(
+            *key,
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::styled(
+            format!(":{desc}  "),
+            Style::default().fg(C_DIM),
+        ));
     }
 
-    let para = ratatui::widgets::Paragraph::new(Line::from(spans))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(C_BORDER)),
-        );
+    let para = ratatui::widgets::Paragraph::new(Line::from(spans)).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(C_BORDER)),
+    );
     f.render_widget(para, area);
 }
 
@@ -214,12 +209,12 @@ pub fn state_style(state: &crate::bgp::BgpState) -> Style {
     use crate::bgp::BgpState;
     match state {
         BgpState::Established => Style::default().fg(C_ESTABLISHED),
-        BgpState::Active      => Style::default().fg(C_WARN),
-        BgpState::Connect     => Style::default().fg(C_WARN),
-        BgpState::OpenSent    => Style::default().fg(C_WARN),
+        BgpState::Active => Style::default().fg(C_WARN),
+        BgpState::Connect => Style::default().fg(C_WARN),
+        BgpState::OpenSent => Style::default().fg(C_WARN),
         BgpState::OpenConfirm => Style::default().fg(C_WARN),
-        BgpState::Idle        => Style::default().fg(C_ERROR),
-        BgpState::Unknown(_)  => Style::default().fg(C_DIM),
+        BgpState::Idle => Style::default().fg(C_ERROR),
+        BgpState::Unknown(_) => Style::default().fg(C_DIM),
     }
 }
 
@@ -228,7 +223,9 @@ pub fn fmt_num(n: u64) -> String {
     let s = n.to_string();
     let mut result = String::new();
     for (i, c) in s.chars().rev().enumerate() {
-        if i > 0 && i % 3 == 0 { result.push(','); }
+        if i > 0 && i % 3 == 0 {
+            result.push(',');
+        }
         result.push(c);
     }
     result.chars().rev().collect()

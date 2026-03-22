@@ -1,57 +1,37 @@
 // VyOS 1.5 (Circinus) SSH backend.
 //
-// VyOS 1.5 runs FRRouting (FRR 10.x).  SSH gives a restricted VyOS shell
-// (`/bin/vbash`).  All FRR commands are issued via `vtysh -c '...'` which
-// works for users in the `frrvty` group (the default `vyos` user qualifies).
-//
-// FRR command differences vs Cisco IOS style:
-//   Cisco/IOS                  FRR/VyOS
-//   show ip bgp summary    →   show bgp summary
-//   show ip bgp            →   show bgp
-//   show ip bgp neighbors  →   show bgp neighbors
-//   show ip prefix-list    →   show bgp prefix-list  (also accepts show ip …)
-//   show route-map         →   show route-map        (same)
-//   show ip community-list →   show bgp community-list (also accepts show ip …)
-//
-// The output format is identical to FRR – the same parsers from cisco.rs are
-// reused directly (they already handle FRR output).
+// SSH transport is delegated to the shared SshSessionManager.
+// VyOS runs FRRouting — all commands go through `vtysh -c '...'`.
+// Output parsed by cisco.rs parsers (FRR-compatible format).
 
 #![allow(dead_code)]
 
 use crate::{
     bgp::{parse_bgp_summary, BgpRoute, BgpSummary},
-    router::{ConnectionStatus, RouterConfig},
     router::cisco::{
-        parse_all_neighbor_details, parse_bgp_table, parse_neighbor_detail, parse_prefix_list_entries,
-        parse_route_map_entries, parse_community_list_entries,
+        parse_all_neighbor_details, parse_bgp_table, parse_community_list_entries,
+        parse_neighbor_detail, parse_prefix_list_entries, parse_route_map_entries,
     },
+    router::{ConnectionStatus, RouterConfig},
+    ssh::SshSessionManager,
 };
 use anyhow::{bail, Result};
 use std::collections::HashMap;
 use std::net::IpAddr;
-use std::time::Duration;
-use tokio::process::Command;
+use std::sync::Arc;
 
 pub struct VyOsBackend {
-    pub hostname:  String,
-    pub port:      u16,
-    pub username:  String,
-    pub password:  Option<String>,
-    pub router_id: IpAddr,
-    pub local_as:  u32,
-    status:        ConnectionStatus,
+    config: RouterConfig,
+    ssh: Arc<SshSessionManager>,
+    status: ConnectionStatus,
 }
 
 impl VyOsBackend {
-    pub fn new(cfg: &RouterConfig) -> Self {
+    pub fn new(cfg: &RouterConfig, ssh: Arc<SshSessionManager>) -> Self {
         Self {
-            hostname:  cfg.hostname.clone(),
-            port:      cfg.ssh_port,
-            username:  cfg.username.clone(),
-            password:  cfg.password.clone(),
-            router_id: cfg.router_id.unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED)),
-            local_as:  cfg.local_as.unwrap_or(0),
-            status:    ConnectionStatus::Disconnected,
+            config: cfg.clone(),
+            ssh,
+            status: ConnectionStatus::Disconnected,
         }
     }
 
@@ -59,75 +39,16 @@ impl VyOsBackend {
         &self.status
     }
 
-    // ── Raw SSH helper ────────────────────────────────────────────────────────
-    //
-    // Runs:  ssh [opts] user@host "<shell_cmd>"
-    // The caller is responsible for wrapping daemons commands in vtysh_run().
-
-    async fn raw_ssh_run_inner(&self, shell_cmd: &str) -> Result<String> {
-        let target = format!("{}@{}", self.username, self.hostname);
-        let port_str = self.port.to_string();
-        let control_path_arg = format!("ControlPath={}", crate::router::SSH_MUX_CONTROL_PATH);
-
-        let mut cmd;
-        let mut ssh_args: Vec<&str> = vec![
-            "-p", &port_str,
-            "-o", "ConnectTimeout=5",
-            "-o", "StrictHostKeyChecking=accept-new",
-            "-o", "LogLevel=ERROR",
-            "-o", "ControlMaster=auto",
-            "-o", &control_path_arg,
-            "-o", "ControlPersist=600",
-        ];
-
-        if let Some(ref pw) = self.password {
-            cmd = Command::new("sshpass");
-            cmd.env("SSHPASS", pw);
-            cmd.arg("-e").arg("ssh");
-            ssh_args.push("-o");
-            ssh_args.push("PreferredAuthentications=password,keyboard-interactive");
-        } else {
-            cmd = Command::new("ssh");
-            ssh_args.push("-o");
-            ssh_args.push("BatchMode=yes");
-        }
-
-        cmd.args(&ssh_args).arg(&target).arg(shell_cmd);
-
-        let output = tokio::time::timeout(
-            Duration::from_secs(15),
-            cmd.output(),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("SSH timed out connecting to {}", self.hostname))??;
-
-        if !output.status.success() && output.stdout.is_empty() {
-            let err = String::from_utf8_lossy(&output.stderr).to_string();
-            bail!("SSH error: {}", err.trim());
-        }
-
-        Ok(String::from_utf8_lossy(&output.stdout).to_string())
-    }
+    // ── SSH helpers (delegated to session manager) ────────────────────────────
 
     async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
-        match self.raw_ssh_run_inner(shell_cmd).await {
-            Err(e) if crate::router::is_ssh_mux_error(&e) => {
-                crate::router::cleanup_mux_socket(&self.username, &self.hostname, self.port).await;
-                self.raw_ssh_run_inner(shell_cmd).await
-            }
-            other => other,
-        }
+        self.ssh.run_cmd(self.config.id, shell_cmd).await
     }
-
-    // ── vtysh helper ──────────────────────────────────────────────────────────
-    //
-    // Wraps an FRR operational command in `vtysh -c '...'`.
-    // Single-quotes inside the command are escaped as '\'' (shell quoting trick).
 
     async fn vtysh_run(&self, frr_cmd: &str) -> Result<String> {
         let escaped = frr_cmd.replace('\'', "'\\''");
         let shell_cmd = format!("vtysh -c '{escaped}'");
-        self.raw_ssh_run(&shell_cmd).await
+        self.ssh.run_cmd(self.config.id, &shell_cmd).await
     }
 
     // ── connect ───────────────────────────────────────────────────────────────
@@ -154,13 +75,8 @@ impl VyOsBackend {
     }
 
     // ── refresh ───────────────────────────────────────────────────────────────
-    //
-    // VyOS FRR produces `show bgp summary` output with the same FRR format
-    // that parse_bgp_summary() already handles.
 
     pub async fn refresh(&mut self) -> Result<BgpSummary> {
-        // Try several FRR commands — `show ip bgp summary` is most broadly
-        // supported across VyOS / FRR versions so it goes first.
         let cmds = [
             "show ip bgp summary",
             "show bgp ipv4 unicast summary",
@@ -176,7 +92,10 @@ impl VyOsBackend {
                     break;
                 }
                 Ok(out) => {
-                    last_err = format!("'{cmd}' did not contain BGP header (got {} bytes)", out.len());
+                    last_err = format!(
+                        "'{cmd}' did not contain BGP header (got {} bytes)",
+                        out.len()
+                    );
                 }
                 Err(e) => {
                     last_err = format!("'{cmd}' failed: {e}");
@@ -184,8 +103,6 @@ impl VyOsBackend {
             }
         }
 
-        // Fallback: run `show ip bgp summary` directly over SSH (no vtysh wrapper)
-        // in case vtysh is not available or behaves differently.
         if raw.is_empty() {
             match self.raw_ssh_run("show ip bgp summary").await {
                 Ok(out) if out.contains("BGP router identifier") => {
@@ -197,20 +114,17 @@ impl VyOsBackend {
         }
 
         if raw.is_empty() {
-            bail!("Could not retrieve BGP summary from {}: {last_err}", self.hostname);
+            bail!(
+                "Could not retrieve BGP summary from {}: {last_err}",
+                self.config.hostname
+            );
         }
 
         let mut summary = parse_bgp_summary(&raw);
-        self.router_id = summary.router_id;
-        self.local_as  = summary.local_as;
-        self.status    = ConnectionStatus::Connected;
+        self.status = ConnectionStatus::Connected;
 
-        // Fetch all neighbour details in a SINGLE vtysh call.
         let mut detail_map = {
-            let cmds = [
-                "show ip bgp neighbors",
-                "show bgp neighbors",
-            ];
+            let cmds = ["show ip bgp neighbors", "show bgp neighbors"];
             let mut map = std::collections::HashMap::new();
             'outer: for cmd in &cmds {
                 if let Ok(out) = self.vtysh_run(cmd).await {
@@ -220,7 +134,6 @@ impl VyOsBackend {
                     }
                 }
             }
-            // Fallback: raw SSH (no vtysh wrapper)
             if map.is_empty() {
                 if let Ok(out) = self.raw_ssh_run("show ip bgp neighbors").await {
                     if out.contains("BGP neighbor is") {
@@ -233,15 +146,19 @@ impl VyOsBackend {
 
         for peer in &mut summary.peers {
             if let Some(d) = detail_map.remove(&peer.neighbor_ip) {
-                peer.description          = d.description;
-                peer.route_map_in         = d.route_map_in;
-                peer.route_map_out        = d.route_map_out;
-                peer.next_hop_self        = d.next_hop_self;
+                peer.description = d.description;
+                peer.route_map_in = d.route_map_in;
+                peer.route_map_out = d.route_map_out;
+                peer.next_hop_self = d.next_hop_self;
                 peer.route_reflector_client = d.route_reflector_client;
-                peer.update_source        = d.update_source;
-                peer.password_configured  = d.password_configured;
-                if d.hold_time > 0 { peer.hold_time = d.hold_time; }
-                if d.keepalive  > 0 { peer.keepalive  = d.keepalive;  }
+                peer.update_source = d.update_source;
+                peer.password_configured = d.password_configured;
+                if d.hold_time > 0 {
+                    peer.hold_time = d.hold_time;
+                }
+                if d.keepalive > 0 {
+                    peer.keepalive = d.keepalive;
+                }
             }
         }
 
@@ -251,11 +168,7 @@ impl VyOsBackend {
     // ── get_routes ────────────────────────────────────────────────────────────
 
     pub async fn get_routes(&mut self) -> Result<Vec<BgpRoute>> {
-        let cmds = [
-            "show ip bgp",
-            "show bgp ipv4 unicast",
-            "show bgp",
-        ];
+        let cmds = ["show ip bgp", "show bgp ipv4 unicast", "show bgp"];
 
         for cmd in &cmds {
             if let Ok(out) = self.vtysh_run(cmd).await {
@@ -264,7 +177,6 @@ impl VyOsBackend {
                 }
             }
         }
-        // Fallback: direct SSH without vtysh
         if let Ok(out) = self.raw_ssh_run("show ip bgp").await {
             if out.contains("BGP table version") || out.contains("Status codes") {
                 return Ok(parse_bgp_table(&out));
@@ -272,20 +184,29 @@ impl VyOsBackend {
         }
         Ok(vec![])
     }
-    // ── get_peer_routes ───────────────────────────────────────────────────────────────────
 
-    pub async fn get_peer_routes(&self, ip: IpAddr, dir: crate::bgp::PeerRouteDirection) -> Result<Vec<BgpRoute>> {
+    // ── get_peer_routes ───────────────────────────────────────────────────────
+
+    pub async fn get_peer_routes(
+        &self,
+        ip: IpAddr,
+        dir: crate::bgp::PeerRouteDirection,
+    ) -> Result<Vec<BgpRoute>> {
         use crate::bgp::PeerRouteDirection;
         let cmd = match dir {
-            PeerRouteDirection::Received   => format!("show bgp neighbors {ip} routes"),
+            PeerRouteDirection::Received => format!("show bgp neighbors {ip} routes"),
             PeerRouteDirection::Advertised => format!("show bgp neighbors {ip} advertised-routes"),
         };
         let raw = self.vtysh_run(&cmd).await?;
         Ok(parse_bgp_table(&raw))
     }
+
     // ── fetch_neighbor_detail ─────────────────────────────────────────────────
 
-    async fn fetch_neighbor_detail(&self, ip: IpAddr) -> Result<crate::router::cisco::NeighborDetail> {
+    async fn fetch_neighbor_detail(
+        &self,
+        ip: IpAddr,
+    ) -> Result<crate::router::cisco::NeighborDetail> {
         let cmds = [
             format!("show ip bgp neighbors {ip}"),
             format!("show bgp neighbors {ip}"),
@@ -297,8 +218,10 @@ impl VyOsBackend {
                 }
             }
         }
-        // Fallback: direct SSH
-        if let Ok(out) = self.raw_ssh_run(&format!("show ip bgp neighbors {ip}")).await {
+        if let Ok(out) = self
+            .raw_ssh_run(&format!("show ip bgp neighbors {ip}"))
+            .await
+        {
             if out.contains("BGP neighbor is") {
                 return Ok(parse_neighbor_detail(&out));
             }
@@ -306,10 +229,8 @@ impl VyOsBackend {
         bail!("could not fetch neighbor detail for {ip}")
     }
 
-    // ── ping_mtu ─────────────────────────────────────────────────────────────────
+    // ── ping_mtu ─────────────────────────────────────────────────────────────
 
-    /// Linux DF-bit ping (`-M do`): tries 1500-byte then 1430-byte frame.
-    /// Returns IP-total frame size that succeeded, or 0 if all failed.
     pub async fn ping_mtu(&self, target: IpAddr) -> Result<u16> {
         for payload in [1472u16, 1402, 548] {
             let cmd = format!("ping -c 3 -M do -s {} {}", payload, target);
@@ -321,7 +242,7 @@ impl VyOsBackend {
         Ok(0)
     }
 
-    // ── apply_config ─────────────────────────────────────────────────────────────────
+    // ── apply_config ─────────────────────────────────────────────────────────
 
     pub async fn apply_config(&mut self, _config: &str) -> anyhow::Result<()> {
         bail!("apply_config not yet implemented for VyOS backend");
@@ -329,7 +250,10 @@ impl VyOsBackend {
 
     // ── fetch_route_map_detail ────────────────────────────────────────────────
 
-    pub async fn fetch_route_map_detail(&self, rm_name: &str) -> Result<crate::bgp::RouteMapDetail> {
+    pub async fn fetch_route_map_detail(
+        &self,
+        rm_name: &str,
+    ) -> Result<crate::bgp::RouteMapDetail> {
         use crate::bgp::{PrefixListEntry, RouteMapDetail};
 
         let cmd = format!("show route-map {rm_name}");
@@ -341,39 +265,49 @@ impl VyOsBackend {
         for entry in &entries {
             for clause in &entry.match_clauses {
                 if clause.contains("prefix-list") {
-                    let part = clause.splitn(2, ':').nth(1).unwrap_or("").trim();
-                    for name in part.split_whitespace() { plist_names.push(name.to_string()); }
+                    let part = clause.split_once(':').map(|x| x.1).unwrap_or("").trim();
+                    for name in part.split_whitespace() {
+                        plist_names.push(name.to_string());
+                    }
                 }
                 if clause.starts_with("community") && clause.contains(':') {
-                    let part = clause.splitn(2, ':').nth(1).unwrap_or("").trim();
-                    for name in part.split_whitespace() { clist_names.push(name.to_string()); }
+                    let part = clause.split_once(':').map(|x| x.1).unwrap_or("").trim();
+                    for name in part.split_whitespace() {
+                        clist_names.push(name.to_string());
+                    }
                 }
             }
         }
 
-        // Fetch all prefix-lists and community-lists in parallel
-        let plist_futs: Vec<_> = plist_names.iter().map(|name| {
-            let cmd2 = format!("show ip prefix-list {name}");
-            let name = name.clone();
-            async move {
-                let result = self.vtysh_run(&cmd2).await;
-                (name, result)
-            }
-        }).collect();
+        let plist_futs: Vec<_> = plist_names
+            .iter()
+            .map(|name| {
+                let cmd2 = format!("show ip prefix-list {name}");
+                let name = name.clone();
+                async move {
+                    let result = self.vtysh_run(&cmd2).await;
+                    (name, result)
+                }
+            })
+            .collect();
 
-        let clist_futs: Vec<_> = clist_names.iter().map(|name| {
-            let cmd3 = format!("show ip community-list {name}");
-            let name = name.clone();
-            async move {
-                let result = self.vtysh_run(&cmd3).await;
-                (name, result)
-            }
-        }).collect();
+        let clist_futs: Vec<_> = clist_names
+            .iter()
+            .map(|name| {
+                let cmd3 = format!("show ip community-list {name}");
+                let name = name.clone();
+                async move {
+                    let result = self.vtysh_run(&cmd3).await;
+                    (name, result)
+                }
+            })
+            .collect();
 
         let (plist_results, clist_results) = futures::future::join(
             futures::future::join_all(plist_futs),
             futures::future::join_all(clist_futs),
-        ).await;
+        )
+        .await;
 
         let mut prefix_lists: HashMap<String, Vec<PrefixListEntry>> = HashMap::new();
         for (name, result) in plist_results {
@@ -389,6 +323,11 @@ impl VyOsBackend {
             }
         }
 
-        Ok(RouteMapDetail { name: rm_name.to_string(), entries, prefix_lists, community_lists })
+        Ok(RouteMapDetail {
+            name: rm_name.to_string(),
+            entries,
+            prefix_lists,
+            community_lists,
+        })
     }
 }

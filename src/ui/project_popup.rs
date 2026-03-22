@@ -18,7 +18,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
 
     match app.project_editor_mode {
         ProjectEditorMode::ToggleRouters => draw_toggle_routers(f, app, area),
-        _                               => draw_project_list(f, app, area),
+        _ => draw_project_list(f, app, area),
     }
 }
 
@@ -34,7 +34,9 @@ fn draw_project_list(f: &mut Frame, app: &mut App, area: Rect) {
 
     // "All Routers" entry
     let all_style = if app.active_project.is_none() {
-        Style::default().fg(C_ESTABLISHED).add_modifier(Modifier::BOLD)
+        Style::default()
+            .fg(C_ESTABLISHED)
+            .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(C_DIM)
     };
@@ -58,7 +60,9 @@ fn draw_project_list(f: &mut Frame, app: &mut App, area: Rect) {
         let is_active = app.active_project == Some(proj.id);
         let marker = if is_active { "▶" } else { " " };
         let name_style = if is_active {
-            Style::default().fg(C_ESTABLISHED).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(C_ESTABLISHED)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(C_HEADER)
         };
@@ -78,7 +82,9 @@ fn draw_project_list(f: &mut Frame, app: &mut App, area: Rect) {
             Span::raw("  "),
             Span::styled(
                 format!("  {}▌", app.project_editor_buf),
-                Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
             ),
         ])));
     }
@@ -89,11 +95,12 @@ fn draw_project_list(f: &mut Frame, app: &mut App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(C_SELECTED))
-                .title(Span::styled(title, Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))),
+                .title(Span::styled(
+                    title,
+                    Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+                )),
         )
-        .highlight_style(
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     // Offset selection by 2 (for "All Routers" + separator)
@@ -109,17 +116,25 @@ fn draw_project_list(f: &mut Frame, app: &mut App, area: Rect) {
     // Help bar
     let help_spans = if editing_name {
         vec![
-            key_span(" Enter"), hint_span(":save  "),
-            key_span("Esc"),    hint_span(":cancel"),
+            key_span(" Enter"),
+            hint_span(":save  "),
+            key_span("Esc"),
+            hint_span(":cancel"),
         ]
     } else {
         vec![
-            key_span(" Enter"), hint_span(":switch  "),
-            key_span("0"),      hint_span(":all  "),
-            key_span("a"),      hint_span(":add  "),
-            key_span("d"),      hint_span(":delete  "),
-            key_span("e"),      hint_span(":edit routers  "),
-            key_span("Esc"),    hint_span(":close"),
+            key_span(" Enter"),
+            hint_span(":switch  "),
+            key_span("0"),
+            hint_span(":all  "),
+            key_span("a"),
+            hint_span(":add  "),
+            key_span("d"),
+            hint_span(":delete  "),
+            key_span("e"),
+            hint_span(":edit routers  "),
+            key_span("Esc"),
+            hint_span(":close"),
         ]
     };
     let help = Paragraph::new(Line::from(help_spans)).block(
@@ -131,11 +146,13 @@ fn draw_project_list(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_toggle_routers(f: &mut Frame, app: &mut App, area: Rect) {
-    let proj = match app.project_list_state.selected()
+    let proj = match app
+        .project_list_state
+        .selected()
         .and_then(|i| app.projects.get(i))
     {
         Some(p) => p,
-        None    => return,
+        None => return,
     };
 
     let rows = Layout::default()
@@ -143,25 +160,26 @@ fn draw_toggle_routers(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Min(0), Constraint::Length(3)])
         .split(area);
 
-    let items: Vec<ListItem> = app.all_routers.iter().map(|r| {
-        let in_proj = proj.router_ids.contains(&r.id);
-        let check = if in_proj { "[✓]" } else { "[ ]" };
-        let style = if in_proj {
-            Style::default().fg(C_ESTABLISHED)
-        } else {
-            Style::default().fg(C_DIM)
-        };
-        ListItem::new(Line::from(vec![
-            Span::raw("  "),
-            Span::styled(check, style),
-            Span::raw(" "),
-            Span::styled(&r.name, Style::default().fg(C_HEADER)),
-            Span::styled(
-                format!("  ({})", r.hostname),
-                Style::default().fg(C_DIM),
-            ),
-        ]))
-    }).collect();
+    let items: Vec<ListItem> = app
+        .all_routers
+        .iter()
+        .map(|r| {
+            let in_proj = proj.router_ids.contains(&r.id);
+            let check = if in_proj { "[✓]" } else { "[ ]" };
+            let style = if in_proj {
+                Style::default().fg(C_ESTABLISHED)
+            } else {
+                Style::default().fg(C_DIM)
+            };
+            ListItem::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(check, style),
+                Span::raw(" "),
+                Span::styled(&r.name, Style::default().fg(C_HEADER)),
+                Span::styled(format!("  ({})", r.hostname), Style::default().fg(C_DIM)),
+            ]))
+        })
+        .collect();
 
     let title = format!(" {} — Select Routers ", proj.name);
     let list = List::new(items)
@@ -169,20 +187,25 @@ fn draw_toggle_routers(f: &mut Frame, app: &mut App, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(C_SELECTED))
-                .title(Span::styled(title, Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))),
+                .title(Span::styled(
+                    title,
+                    Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+                )),
         )
-        .highlight_style(
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     f.render_stateful_widget(list, rows[0], &mut app.project_toggle_state);
 
     let help = Paragraph::new(Line::from(vec![
-        key_span(" Space"), hint_span(":toggle  "),
-        key_span("↑↓"),    hint_span(":navigate  "),
-        key_span("Enter/Esc"), hint_span(":done"),
-    ])).block(
+        key_span(" Space"),
+        hint_span(":toggle  "),
+        key_span("↑↓"),
+        hint_span(":navigate  "),
+        key_span("Enter/Esc"),
+        hint_span(":done"),
+    ]))
+    .block(
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(C_BORDER)),

@@ -2,7 +2,7 @@ use crate::{
     bgp::{BgpPeer, BgpRoute, BgpSummary},
     config::AppConfig,
     db::RouterDb,
-    events::AppEvent,
+    events::{AppEvent, FetchRequest},
     router::{ConnectionStatus, Project, RouterBackend, RouterConfig, RouterVendor},
 };
 use ratatui::widgets::{ListState, TableState};
@@ -30,8 +30,10 @@ pub enum ProjectEditorMode {
 }
 
 /// Displayable field labels for the router editor form.
-pub const EDITOR_FIELDS:  &[&str] = &["Name", "Hostname", "Port", "Username", "Password", "Vendor", "VDOM"];
-pub const EDITOR_NFIELDS: usize   = 7;
+pub const EDITOR_FIELDS: &[&str] = &[
+    "Name", "Hostname", "Port", "Username", "Password", "Vendor", "VDOM",
+];
+pub const EDITOR_NFIELDS: usize = 7;
 
 // ─── Filter Mode ─────────────────────────────────────────────────────────────
 
@@ -50,12 +52,12 @@ pub enum FilterMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ActiveTab {
     Dashboard = 0,
-    Peers     = 1,
-    Routes    = 2,
-    Config    = 3,
-    Logs      = 4,
-    Routers   = 5,
-    ConnLog   = 6,
+    Peers = 1,
+    Routes = 2,
+    Config = 3,
+    Logs = 4,
+    Routers = 5,
+    ConnLog = 6,
 }
 
 impl ActiveTab {
@@ -72,36 +74,36 @@ impl ActiveTab {
     pub fn next(self) -> Self {
         match self {
             ActiveTab::Dashboard => ActiveTab::Peers,
-            ActiveTab::Peers     => ActiveTab::Routes,
-            ActiveTab::Routes    => ActiveTab::Config,
-            ActiveTab::Config    => ActiveTab::Logs,
-            ActiveTab::Logs      => ActiveTab::Routers,
-            ActiveTab::Routers   => ActiveTab::ConnLog,
-            ActiveTab::ConnLog   => ActiveTab::Dashboard,
+            ActiveTab::Peers => ActiveTab::Routes,
+            ActiveTab::Routes => ActiveTab::Config,
+            ActiveTab::Config => ActiveTab::Logs,
+            ActiveTab::Logs => ActiveTab::Routers,
+            ActiveTab::Routers => ActiveTab::ConnLog,
+            ActiveTab::ConnLog => ActiveTab::Dashboard,
         }
     }
 
     pub fn prev(self) -> Self {
         match self {
             ActiveTab::Dashboard => ActiveTab::ConnLog,
-            ActiveTab::Peers     => ActiveTab::Dashboard,
-            ActiveTab::Routes    => ActiveTab::Peers,
-            ActiveTab::Config    => ActiveTab::Routes,
-            ActiveTab::Logs      => ActiveTab::Config,
-            ActiveTab::Routers   => ActiveTab::Logs,
-            ActiveTab::ConnLog   => ActiveTab::Routers,
+            ActiveTab::Peers => ActiveTab::Dashboard,
+            ActiveTab::Routes => ActiveTab::Peers,
+            ActiveTab::Config => ActiveTab::Routes,
+            ActiveTab::Logs => ActiveTab::Config,
+            ActiveTab::Routers => ActiveTab::Logs,
+            ActiveTab::ConnLog => ActiveTab::Routers,
         }
     }
 
     pub fn label(self) -> &'static str {
         match self {
             ActiveTab::Dashboard => "1 Dashboard",
-            ActiveTab::Peers     => "2 Peers",
-            ActiveTab::Routes    => "3 Routes",
-            ActiveTab::Config    => "4 Config",
-            ActiveTab::Logs      => "5 BGP Log",
-            ActiveTab::Routers   => "6 Routers",
-            ActiveTab::ConnLog   => "7 SSH Log",
+            ActiveTab::Peers => "2 Peers",
+            ActiveTab::Routes => "3 Routes",
+            ActiveTab::Config => "4 Config",
+            ActiveTab::Logs => "5 BGP Log",
+            ActiveTab::Routers => "6 Routers",
+            ActiveTab::ConnLog => "7 SSH Log",
         }
     }
 }
@@ -111,18 +113,18 @@ impl ActiveTab {
 /// Cached BGP data for a single router, allowing instant display on switch.
 pub struct BgpCache {
     pub summary: BgpSummary,
-    pub peers:   Vec<BgpPeer>,
-    pub routes:  Vec<BgpRoute>,
-    pub config:  String,
+    pub peers: Vec<BgpPeer>,
+    pub routes: Vec<BgpRoute>,
+    pub config: String,
 }
 
 // ─── Per-peer route drill-down state ─────────────────────────────────────────
 
 pub struct PeerRouteView {
-    pub peer_ip:   IpAddr,
+    pub peer_ip: IpAddr,
     pub direction: crate::bgp::PeerRouteDirection,
-    pub routes:    Option<Vec<BgpRoute>>,
-    pub error:     Option<String>,
+    pub routes: Option<Vec<BgpRoute>>,
+    pub error: Option<String>,
 }
 
 // ─── App State ────────────────────────────────────────────────────────────────
@@ -133,10 +135,10 @@ pub struct App {
     pub should_quit: bool,
 
     // Routers
-    pub routers:           Vec<RouterConfig>,
+    pub routers: Vec<RouterConfig>,
     pub router_list_state: ListState,
     #[allow(dead_code)]
-    pub backends:          HashMap<Uuid, RouterBackend>,
+    pub backends: HashMap<Uuid, RouterBackend>,
 
     // Per-router connectivity (updated by background TCP probe)
     pub router_status: HashMap<Uuid, ConnectionStatus>,
@@ -145,60 +147,61 @@ pub struct App {
     pub bgp_cache: HashMap<Uuid, BgpCache>,
 
     // BGP data for the currently selected router
-    pub current_summary:   Option<BgpSummary>,
-    pub current_peers:     Vec<BgpPeer>,
-    pub current_routes:    Vec<BgpRoute>,
-    pub peer_table_state:  TableState,
+    pub current_summary: Option<BgpSummary>,
+    pub current_peers: Vec<BgpPeer>,
+    pub current_routes: Vec<BgpRoute>,
+    pub peer_table_state: TableState,
     pub route_table_state: TableState,
 
     // Filter state — Peers tab
-    pub peer_filter:      String,
+    pub peer_filter: String,
     pub peer_filter_mode: FilterMode,
     /// Indices into current_peers that pass the current filter (all when Off).
-    pub peer_indices:     Vec<usize>,
+    pub peer_indices: Vec<usize>,
 
     // Filter state — Routes tab
-    pub route_filter:      String,
+    pub route_filter: String,
     pub route_filter_mode: FilterMode,
     /// Indices into current_routes that pass the current filter (all when Off).
-    pub route_indices:     Vec<usize>,
+    pub route_indices: Vec<usize>,
 
     // Per-peer route drill-down (Peers tab)
-    pub peer_route_view:        Option<PeerRouteView>,
+    pub peer_route_view: Option<PeerRouteView>,
     pub peer_route_table_state: TableState,
 
     // Rendered Cisco config stanza for Config tab
-    pub rendered_config:   String,
-    pub config_lines:      Vec<String>,
+    pub rendered_config: String,
+    pub config_lines: Vec<String>,
     pub config_list_state: ListState,
-    pub config_rm_name:    Option<String>,
-    pub config_routemap:   Option<crate::bgp::RouteMapDetail>,
+    pub config_rm_name: Option<String>,
+    pub config_routemap: Option<crate::bgp::RouteMapDetail>,
     pub routemap_detail_scroll: u16,
     /// Per-router route-map detail cache: (router_id, rm_name) → detail
-    pub routemap_cache:    HashMap<(Uuid, String), crate::bgp::RouteMapDetail>,
+    pub routemap_cache: HashMap<(Uuid, String), crate::bgp::RouteMapDetail>,
 
     // General logs
-    pub logs:           Vec<String>,
+    pub logs: Vec<String>,
     pub log_list_state: ListState,
 
     // Connectivity-only log (online/offline events)
-    pub conn_logs:      Vec<String>,
+    pub conn_logs: Vec<String>,
     pub conn_log_state: ListState,
 
     // Router editor
     pub editor_list_state: ListState,
-    pub editor_mode:       EditorMode,
-    pub editor_field:      usize,
-    pub editor_buf:        String,
-    pub editor_draft:      Option<RouterConfig>,
+    pub editor_mode: EditorMode,
+    pub editor_field: usize,
+    pub editor_buf: String,
+    pub editor_draft: Option<RouterConfig>,
 
     // Status bar
     pub status_message: Option<String>,
-    pub tick_counter:   u64,
+    pub tick_counter: u64,
 
-    // Background ping
+    // Background event + fetch channels
     pub event_tx: Option<mpsc::UnboundedSender<AppEvent>>,
-    ping_tick:    u8,
+    pub fetch_tx: Option<mpsc::UnboundedSender<FetchRequest>>,
+    ping_tick: u8,
 
     // Background BGP refresh for all connected routers (~30 s)
     bgp_refresh_tick: u16,
@@ -207,18 +210,18 @@ pub struct App {
     routemap_fetch_queued: Option<String>,
 
     // Pending BGP update (deferred when user is actively on Config tab)
-    pub pending_bgp_update:  Option<(Uuid, BgpSummary, String)>,
+    pub pending_bgp_update: Option<(Uuid, BgpSummary, String)>,
     pub pending_route_update: Option<(Uuid, Vec<BgpRoute>)>,
-    pub has_pending_update:  bool,
+    pub has_pending_update: bool,
 
     // Projects
-    pub all_routers:          Vec<RouterConfig>,
-    pub projects:             Vec<Project>,
-    pub active_project:       Option<Uuid>,
-    pub project_list_state:   ListState,
-    pub project_popup:        bool,
-    pub project_editor_mode:  ProjectEditorMode,
-    pub project_editor_buf:   String,
+    pub all_routers: Vec<RouterConfig>,
+    pub projects: Vec<Project>,
+    pub active_project: Option<Uuid>,
+    pub project_list_state: ListState,
+    pub project_popup: bool,
+    pub project_editor_mode: ProjectEditorMode,
+    pub project_editor_buf: String,
     pub project_toggle_state: ListState,
 
     // Encrypted SQLite database (holds router configs)
@@ -229,60 +232,64 @@ impl App {
     pub fn new(cfg: AppConfig, router_db: RouterDb) -> Self {
         let n = cfg.routers.len();
         let mut app = Self {
-            current_tab:       ActiveTab::Dashboard,
-            should_quit:       false,
-            routers:           cfg.routers.clone(),
+            current_tab: ActiveTab::Dashboard,
+            should_quit: false,
+            routers: cfg.routers.clone(),
             router_list_state: ListState::default(),
-            backends:          HashMap::new(),
-            router_status:     HashMap::new(),
-            bgp_cache:         HashMap::new(),
-            current_summary:   None,
-            current_peers:     vec![],
-            current_routes:    vec![],
-            peer_table_state:  TableState::default(),
+            backends: HashMap::new(),
+            router_status: HashMap::new(),
+            bgp_cache: HashMap::new(),
+            current_summary: None,
+            current_peers: vec![],
+            current_routes: vec![],
+            peer_table_state: TableState::default(),
             route_table_state: TableState::default(),
-            peer_filter:       String::new(),
-            peer_filter_mode:  FilterMode::Off,
-            peer_indices:      vec![],
-            route_filter:      String::new(),
+            peer_filter: String::new(),
+            peer_filter_mode: FilterMode::Off,
+            peer_indices: vec![],
+            route_filter: String::new(),
             route_filter_mode: FilterMode::Off,
-            route_indices:     vec![],
-            peer_route_view:        None,
+            route_indices: vec![],
+            peer_route_view: None,
             peer_route_table_state: TableState::default(),
-            rendered_config:   String::new(),
-            config_lines:      vec![],
+            rendered_config: String::new(),
+            config_lines: vec![],
             config_list_state: ListState::default(),
-            config_rm_name:    None,
-            config_routemap:   None,
+            config_rm_name: None,
+            config_routemap: None,
             routemap_detail_scroll: 0,
-            routemap_cache:    HashMap::new(),
-            logs:              vec!["bgp-link-manager started".into()],
-            log_list_state:    ListState::default(),
-            conn_logs:         vec![],
-            conn_log_state:    ListState::default(),
+            routemap_cache: HashMap::new(),
+            logs: vec![format!(
+                "bgp-link-manager started — logs: {}",
+                crate::logging::log_path().display()
+            )],
+            log_list_state: ListState::default(),
+            conn_logs: vec![],
+            conn_log_state: ListState::default(),
             editor_list_state: ListState::default(),
-            editor_mode:       EditorMode::Browse,
-            editor_field:      0,
-            editor_buf:        String::new(),
-            editor_draft:      None,
-            status_message:    None,
-            tick_counter:      0,
-            event_tx:          None,
-            ping_tick:         0,
-            bgp_refresh_tick:  0,
+            editor_mode: EditorMode::Browse,
+            editor_field: 0,
+            editor_buf: String::new(),
+            editor_draft: None,
+            status_message: None,
+            tick_counter: 0,
+            event_tx: None,
+            fetch_tx: None,
+            ping_tick: 0,
+            bgp_refresh_tick: 0,
             routemap_fetch_queued: None,
-            pending_bgp_update:  None,
+            pending_bgp_update: None,
             pending_route_update: None,
-            has_pending_update:  false,
-            all_routers:       cfg.routers,
-            projects:          cfg.projects,
-            active_project:    None,
-            project_list_state:   ListState::default(),
-            project_popup:        false,
-            project_editor_mode:  ProjectEditorMode::Browse,
-            project_editor_buf:   String::new(),
+            has_pending_update: false,
+            all_routers: cfg.routers,
+            projects: cfg.projects,
+            active_project: None,
+            project_list_state: ListState::default(),
+            project_popup: false,
+            project_editor_mode: ProjectEditorMode::Browse,
+            project_editor_buf: String::new(),
             project_toggle_state: ListState::default(),
-            router_db:         Some(router_db),
+            router_db: Some(router_db),
         };
 
         if n > 0 {
@@ -300,6 +307,16 @@ impl App {
         self.event_tx = Some(tx);
     }
 
+    pub fn set_fetch_tx(&mut self, tx: mpsc::UnboundedSender<FetchRequest>) {
+        self.fetch_tx = Some(tx);
+    }
+
+    pub fn send_fetch(&self, req: FetchRequest) {
+        if let Some(tx) = &self.fetch_tx {
+            let _ = tx.send(req);
+        }
+    }
+
     // ── Filter helpers ────────────────────────────────────────────────────────
 
     /// Recompute `peer_indices` from the current filter and peers list.
@@ -307,21 +324,40 @@ impl App {
         let filter = self.peer_filter.to_lowercase();
         self.peer_indices = (0..self.current_peers.len())
             .filter(|&i| {
-                if filter.is_empty() { return true; }
+                if filter.is_empty() {
+                    return true;
+                }
                 let p = &self.current_peers[i];
                 p.neighbor_ip.to_string().contains(&filter)
                     || p.remote_as.to_string().contains(&filter)
                     || p.state.as_str().to_lowercase().contains(&filter)
-                    || p.description.as_deref().unwrap_or("").to_lowercase().contains(&filter)
-                    || p.route_map_in.as_deref().unwrap_or("").to_lowercase().contains(&filter)
-                    || p.route_map_out.as_deref().unwrap_or("").to_lowercase().contains(&filter)
+                    || p.description
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&filter)
+                    || p.route_map_in
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&filter)
+                    || p.route_map_out
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&filter)
                     || p.session_type().to_lowercase().contains(&filter)
             })
             .collect();
         // Keep selection valid
         match self.peer_table_state.selected() {
             Some(i) if i >= self.peer_indices.len() => {
-                self.peer_table_state.select(if self.peer_indices.is_empty() { None } else { Some(0) });
+                self.peer_table_state
+                    .select(if self.peer_indices.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    });
             }
             None if !self.peer_indices.is_empty() => {
                 self.peer_table_state.select(Some(0));
@@ -335,18 +371,27 @@ impl App {
         let filter = self.route_filter.to_lowercase();
         self.route_indices = (0..self.current_routes.len())
             .filter(|&i| {
-                if filter.is_empty() { return true; }
+                if filter.is_empty() {
+                    return true;
+                }
                 let r = &self.current_routes[i];
                 r.network.to_lowercase().contains(&filter)
                     || r.next_hop.to_lowercase().contains(&filter)
                     || r.as_path_str().contains(&filter)
-                    || r.communities.iter().any(|c| c.to_lowercase().contains(&filter))
+                    || r.communities
+                        .iter()
+                        .any(|c| c.to_lowercase().contains(&filter))
                     || r.origin.to_string().to_lowercase().contains(&filter)
             })
             .collect();
         match self.route_table_state.selected() {
             Some(i) if i >= self.route_indices.len() => {
-                self.route_table_state.select(if self.route_indices.is_empty() { None } else { Some(0) });
+                self.route_table_state
+                    .select(if self.route_indices.is_empty() {
+                        None
+                    } else {
+                        Some(0)
+                    });
             }
             None if !self.route_indices.is_empty() => {
                 self.route_table_state.select(Some(0));
@@ -375,150 +420,89 @@ impl App {
         self.peer_route_view = None;
         self.peer_route_table_state = TableState::default();
         // Clear any pending update since user is explicitly reloading/switching
-        self.pending_bgp_update  = None;
+        self.pending_bgp_update = None;
         self.pending_route_update = None;
-        self.has_pending_update  = false;
+        self.has_pending_update = false;
 
         if let Some(router) = self.selected_router() {
             let rid = router.id;
             // Instantly display cached data if available
             if let Some(cached) = self.bgp_cache.get(&rid) {
                 self.current_summary = Some(cached.summary.clone());
-                self.current_peers   = cached.peers.clone();
-                self.current_routes  = cached.routes.clone();
+                self.current_peers = cached.peers.clone();
+                self.current_routes = cached.routes.clone();
                 self.rendered_config = cached.config.clone();
-                self.config_lines    = self.rendered_config.lines().map(|l| l.to_string()).collect();
+                self.config_lines = self
+                    .rendered_config
+                    .lines()
+                    .map(|l| l.to_string())
+                    .collect();
                 if !self.config_lines.is_empty() && self.config_list_state.selected().is_none() {
                     self.config_list_state.select(Some(0));
                 }
-                self.config_rm_name  = None;
+                self.config_rm_name = None;
                 self.config_routemap = None;
             } else {
                 self.current_summary = None;
-                self.current_peers   = vec![];
-                self.current_routes  = vec![];
+                self.current_peers = vec![];
+                self.current_routes = vec![];
                 self.rendered_config = String::new();
-                self.config_lines    = vec![];
+                self.config_lines = vec![];
             }
         }
         self.update_peer_filter();
         self.update_route_filter();
-        self.spawn_bgp_fetch_selected();
     }
 
-    /// Spawn a BGP data fetch for the currently selected router.
-    pub fn spawn_bgp_fetch_selected(&self) {
-        if let Some(router) = self.selected_router().cloned() {
-            self.spawn_bgp_fetch_for(router);
+    /// Request a BGP refresh for the currently selected router via the fetch service.
+    pub fn request_refresh_selected(&self) {
+        if let Some(router) = self.selected_router() {
+            self.send_fetch(FetchRequest::RefreshRouter(router.id));
         }
-    }
-
-    /// Spawn a BGP data fetch for a specific router.
-    pub fn spawn_bgp_fetch_for(&self, router: RouterConfig) {
-        let Some(tx) = self.event_tx.clone() else { return };
-        tokio::spawn(async move {
-            let result: anyhow::Result<(crate::bgp::BgpSummary, Vec<crate::bgp::BgpRoute>)> =
-                match router.vendor {
-                    RouterVendor::VyOs => {
-                        let mut b = crate::router::vyos::VyOsBackend::new(&router);
-                        match b.refresh().await {
-                            Ok(s) => { let r = b.get_routes().await.unwrap_or_default(); Ok((s, r)) }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    RouterVendor::Cisco => {
-                        let mut b = crate::router::cisco::CiscoBackend::new(&router);
-                        match b.refresh().await {
-                            Ok(s) => { let r = b.get_routes().await.unwrap_or_default(); Ok((s, r)) }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    RouterVendor::CitrixVpx => {
-                        let mut b = crate::router::citrix::CitrixVpxBackend::new(&router);
-                        match b.refresh().await {
-                            Ok(s) => { let r = b.get_routes().await.unwrap_or_default(); Ok((s, r)) }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    RouterVendor::PfSense => {
-                        let mut b = crate::router::pfsense::PfSenseBackend::new(&router);
-                        match b.refresh().await {
-                            Ok(s) => { let r = b.get_routes().await.unwrap_or_default(); Ok((s, r)) }
-                            Err(e) => Err(e),
-                        }
-                    }
-                    RouterVendor::FortiGate => {
-                        let mut b = crate::router::fortigate::FortiGateBackend::new(&router);
-                        match b.refresh().await {
-                            Ok(s) => { let r = b.get_routes().await.unwrap_or_default(); Ok((s, r)) }
-                            Err(e) => Err(e),
-                        }
-                    }
-                };
-            match result {
-                Ok((summary, routes)) => {
-                    let _ = tx.send(AppEvent::RouteData(router.id, routes));
-                    let _ = tx.send(AppEvent::BgpData(router.id, Box::new(summary)));
-                }
-                Err(e) => {
-                    let _ = tx.send(AppEvent::BgpError(router.id, e.to_string()));
-                }
-            }
-        });
     }
 
     pub fn tick(&mut self) {
         self.tick_counter = self.tick_counter.wrapping_add(1);
-        self.ping_tick    = self.ping_tick.wrapping_add(1);
-        // Probe every ~5 s (25 ticks × 200 ms)
+        self.ping_tick = self.ping_tick.wrapping_add(1);
+
         if self.ping_tick >= 25 {
             self.ping_tick = 0;
-            self.spawn_ping();
+            self.request_ping();
         }
-        // Refresh BGP data for all connected routers every ~30 s (150 ticks × 200 ms).
-        // Paused while user is on Config tab so background SSH fetches don't compete
-        // with the route-map fetches driving the right panel.
+
         if self.current_tab != ActiveTab::Config {
             self.bgp_refresh_tick = self.bgp_refresh_tick.wrapping_add(1);
             if self.bgp_refresh_tick >= 150 {
                 self.bgp_refresh_tick = 0;
-                self.spawn_bgp_fetch_all_connected();
+                self.request_refresh_all_connected();
             }
         }
 
-        // Drain the debounced route-map fetch queue (at most one SSH call per tick).
         if let Some(rm_name) = self.routemap_fetch_queued.take() {
-            self.spawn_routemap_fetch(rm_name);
+            self.request_routemap_fetch(rm_name);
         }
     }
 
-    /// Spawn BGP data fetches for every router that is currently connected.
-    pub fn spawn_bgp_fetch_all_connected(&self) {
-        for router in &self.routers {
-            let is_connected = self.router_status.get(&router.id)
-                == Some(&ConnectionStatus::Connected);
-            if is_connected {
-                self.spawn_bgp_fetch_for(router.clone());
-            }
+    fn request_refresh_all_connected(&self) {
+        let ids: Vec<Uuid> = self
+            .routers
+            .iter()
+            .filter(|r| self.router_status.get(&r.id) == Some(&ConnectionStatus::Connected))
+            .map(|r| r.id)
+            .collect();
+        if !ids.is_empty() {
+            self.send_fetch(FetchRequest::RefreshMany(ids));
         }
     }
 
-    /// Spawn non-blocking async TCP reachability probes for every router.
-    pub fn spawn_ping(&self) {
-        let Some(tx) = self.event_tx.clone() else { return };
-        for router in &self.routers {
-            let id   = router.id;
-            let addr = format!("{}:{}", router.hostname, router.ssh_port);
-            let tx   = tx.clone();
-            tokio::spawn(async move {
-                let reachable = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    tokio::net::TcpStream::connect(&addr),
-                )
-                .await
-                .is_ok_and(|r| r.is_ok());
-                let _ = tx.send(AppEvent::PingResult(id, reachable));
-            });
+    pub fn request_ping(&self) {
+        let targets: Vec<(Uuid, String)> = self
+            .routers
+            .iter()
+            .map(|r| (r.id, format!("{}:{}", r.hostname, r.ssh_port)))
+            .collect();
+        if !targets.is_empty() {
+            self.send_fetch(FetchRequest::Ping(targets));
         }
     }
 
@@ -529,21 +513,24 @@ impl App {
         } else {
             ConnectionStatus::Disconnected
         };
-        let prev = self.router_status.get(&id)
+        let prev = self
+            .router_status
+            .get(&id)
             .cloned()
             .unwrap_or(ConnectionStatus::Disconnected);
 
         // If the router just came online, trigger a BGP fetch
-        let came_online = reachable
-            && prev != ConnectionStatus::Connected;
+        let came_online = reachable && prev != ConnectionStatus::Connected;
 
         if prev != new_status {
-            let name = self.routers.iter()
+            let name = self
+                .routers
+                .iter()
                 .find(|r| r.id == id)
                 .map(|r| r.name.clone())
                 .unwrap_or_else(|| id.to_string());
             let msg = match &new_status {
-                ConnectionStatus::Connected    => format!("{name} came ONLINE"),
+                ConnectionStatus::Connected => format!("{name} came ONLINE"),
                 ConnectionStatus::Disconnected => format!("{name} went OFFLINE"),
                 _ => return,
             };
@@ -552,35 +539,33 @@ impl App {
         self.router_status.insert(id, new_status);
 
         if came_online {
-            if let Some(router) = self.routers.iter().find(|r| r.id == id).cloned() {
-                self.spawn_bgp_fetch_for(router);
-            }
+            self.send_fetch(FetchRequest::RefreshRouter(id));
         }
     }
 
     /// Called when a BGP fetch succeeds.
-    pub fn handle_bgp_data(&mut self, id: Uuid, summary: BgpSummary) {
+    pub fn handle_bgp_data(&mut self, id: Uuid, summary: BgpSummary, rendered: String) {
         self.router_status.insert(id, ConnectionStatus::Connected);
-
-        let rendered = crate::router::cisco::CiscoBackend::render_bgp_stanza(&summary);
 
         let is_selected = self.selected_router().map(|r| r.id) == Some(id);
 
         // Check if the data actually changed compared to the cache
-        let data_changed = self.bgp_cache.get(&id)
+        let data_changed = self
+            .bgp_cache
+            .get(&id)
             .map(|cached| !cached.summary.content_eq(&summary) || cached.config != rendered)
             .unwrap_or(true); // no cache = treat as changed
 
         // Always update the per-router cache
         let entry = self.bgp_cache.entry(id).or_insert_with(|| BgpCache {
             summary: summary.clone(),
-            peers:   vec![],
-            routes:  vec![],
-            config:  String::new(),
+            peers: vec![],
+            routes: vec![],
+            config: String::new(),
         });
         entry.summary = summary.clone();
-        entry.peers   = summary.peers.clone();
-        entry.config  = rendered.clone();
+        entry.peers = summary.peers.clone();
+        entry.config = rendered.clone();
 
         if is_selected {
             if !data_changed {
@@ -590,8 +575,8 @@ impl App {
 
             // If user is actively browsing the Config tab, defer the update
             if self.current_tab == ActiveTab::Config && !self.config_lines.is_empty() {
-                self.pending_bgp_update  = Some((id, summary, rendered));
-                self.has_pending_update  = true;
+                self.pending_bgp_update = Some((id, summary, rendered));
+                self.has_pending_update = true;
                 return;
             }
 
@@ -602,14 +587,18 @@ impl App {
 
     /// Apply a BGP data update to the displayed state.
     fn apply_bgp_update(&mut self, id: Uuid, summary: BgpSummary, rendered: String) {
-        self.current_peers   = summary.peers.clone();
+        self.current_peers = summary.peers.clone();
         self.current_summary = Some(summary);
         self.rendered_config = rendered;
-        self.config_lines = self.rendered_config.lines().map(|l| l.to_string()).collect();
+        self.config_lines = self
+            .rendered_config
+            .lines()
+            .map(|l| l.to_string())
+            .collect();
         if !self.config_lines.is_empty() && self.config_list_state.selected().is_none() {
             self.config_list_state.select(Some(0));
         }
-        self.config_rm_name  = None;
+        self.config_rm_name = None;
         self.config_routemap = None;
         // Invalidate cached route-map details for this router since BGP data changed
         self.routemap_cache.retain(|&(rid, _), _| rid != id);
@@ -636,9 +625,9 @@ impl App {
 
     /// Dismiss pending update notification without applying.
     pub fn dismiss_pending_update(&mut self) {
-        self.pending_bgp_update  = None;
+        self.pending_bgp_update = None;
         self.pending_route_update = None;
-        self.has_pending_update  = false;
+        self.has_pending_update = false;
     }
 
     /// Called when a route table fetch completes.
@@ -646,7 +635,9 @@ impl App {
         let is_selected = self.selected_router().map(|r| r.id) == Some(id);
 
         // Check if routes actually changed
-        let data_changed = self.bgp_cache.get(&id)
+        let data_changed = self
+            .bgp_cache
+            .get(&id)
             .map(|cached| cached.routes != routes)
             .unwrap_or(true);
 
@@ -674,42 +665,20 @@ impl App {
     /// Called when a route-map detail fetch completes.
     pub fn handle_routemap_detail(&mut self, id: Uuid, detail: crate::bgp::RouteMapDetail) {
         // Cache the result for this router + route-map name
-        self.routemap_cache.insert((id, detail.name.clone()), detail.clone());
+        self.routemap_cache
+            .insert((id, detail.name.clone()), detail.clone());
         if self.config_rm_name.as_deref() == Some(detail.name.as_str()) {
             self.config_routemap = Some(detail);
         }
     }
 
-    /// Spawn a background SSH fetch for a route-map's full detail.
-    pub fn spawn_routemap_fetch(&self, rm_name: String) {
-        let Some(router) = self.selected_router().cloned() else { return };
-        let Some(tx) = self.event_tx.clone() else { return };
-        tokio::spawn(async move {
-            let detail = match router.vendor {
-                RouterVendor::VyOs => {
-                    let b = crate::router::vyos::VyOsBackend::new(&router);
-                    b.fetch_route_map_detail(&rm_name).await
-                }
-                RouterVendor::Cisco => {
-                    let b = crate::router::cisco::CiscoBackend::new(&router);
-                    b.fetch_route_map_detail(&rm_name).await
-                }
-                RouterVendor::CitrixVpx => {
-                    let b = crate::router::citrix::CitrixVpxBackend::new(&router);
-                    b.fetch_route_map_detail(&rm_name).await
-                }
-                RouterVendor::PfSense => {
-                    let b = crate::router::pfsense::PfSenseBackend::new(&router);
-                    b.fetch_route_map_detail(&rm_name).await
-                }
-                RouterVendor::FortiGate => {
-                    let b = crate::router::fortigate::FortiGateBackend::new(&router);
-                    b.fetch_route_map_detail(&rm_name).await
-                }
-            };
-            if let Ok(detail) = detail {
-                let _ = tx.send(AppEvent::RouteMapDetail(router.id, Box::new(detail)));
-            }
+    fn request_routemap_fetch(&self, rm_name: String) {
+        let Some(router) = self.selected_router() else {
+            return;
+        };
+        self.send_fetch(FetchRequest::FetchRouteMap {
+            router_id: router.id,
+            rm_name,
         });
     }
 
@@ -717,7 +686,7 @@ impl App {
     pub fn on_config_nav(&mut self) {
         let idx = match self.config_list_state.selected() {
             Some(i) => i,
-            None    => return,
+            None => return,
         };
         let line = self.config_lines.get(idx).cloned().unwrap_or_default();
         if let Some(rm_name) = extract_routemap_name_from_line(&line) {
@@ -740,42 +709,101 @@ impl App {
                 self.routemap_fetch_queued = Some(rm_name);
             }
         } else {
-            self.config_rm_name  = None;
+            self.config_rm_name = None;
             self.config_routemap = None;
             self.routemap_fetch_queued = None;
         }
     }
 
     /// Called when a BGP fetch fails.
+    ///
+    /// The full SSH error detail goes to the file log only; the UI log gets a
+    /// compact message so it doesn't scroll away useful entries.
     pub fn handle_bgp_error(&mut self, id: Uuid, err: String) {
-        let name = self.routers.iter()
+        let name = self
+            .routers
+            .iter()
             .find(|r| r.id == id)
             .map(|r| r.name.clone())
             .unwrap_or_else(|| id.to_string());
-        let msg = format!("{name}: BGP fetch failed — {err}");
-        self.log(msg);
-        self.router_status.insert(id, ConnectionStatus::Error(err));
+
+        // Full detail → file log only
+        tracing::error!(router = %name, error = %err, "BGP fetch failed");
+
+        // Compact summary → UI (title bar + SSH log)
+        let short = truncate_error(&err, 80);
+        self.conn_log(format!("{name}: fetch failed — {short}"));
+        // Strip "SSH error: " prefix since ConnectionStatus::Display adds "Error: "
+        let status_msg = err.strip_prefix("SSH error: ").unwrap_or(&err);
+        self.router_status
+            .insert(id, ConnectionStatus::Error(truncate_error(status_msg, 50)));
+    }
+
+    // ── SSH session lifecycle ─────────────────────────────────────────────────
+
+    /// Called when the background SSH warm-up finishes.
+    pub fn handle_ssh_warm_complete(&mut self, ready: usize, failed: Vec<(String, String)>) {
+        if failed.is_empty() {
+            let msg = format!("SSH ready: all {ready} routers connected");
+            self.conn_log(&msg);
+            self.set_status(&msg);
+        } else {
+            let fail_names: Vec<&str> = failed.iter().map(|(n, _)| n.as_str()).collect();
+            let msg = format!(
+                "SSH warm: {ready} OK, {} failed ({})",
+                failed.len(),
+                fail_names.join(", "),
+            );
+            self.conn_log(&msg);
+            self.set_status(&msg);
+            for (name, err) in &failed {
+                tracing::warn!(router = %name, error = %err, "SSH warm-up failed");
+            }
+        }
+    }
+
+    /// Called by the periodic health check task.
+    pub fn handle_ssh_health_report(&mut self, healthy: usize, rewarmed: usize, dead: Vec<String>) {
+        if !dead.is_empty() {
+            let msg = format!(
+                "SSH health: {} healthy, {} re-warmed, {} dead ({})",
+                healthy,
+                rewarmed,
+                dead.len(),
+                dead.join(", ")
+            );
+            self.conn_log(&msg);
+            tracing::warn!(healthy, rewarmed, dead = ?dead, "SSH health report — dead sessions");
+        } else if rewarmed > 0 {
+            let msg = format!("SSH health: {} healthy, {} re-warmed", healthy, rewarmed);
+            self.conn_log(&msg);
+            tracing::info!(healthy, rewarmed, "SSH health report — all recovered");
+        } else {
+            tracing::debug!(healthy, "SSH health report — all healthy");
+        }
     }
 
     // ── Per-peer route drill-down ─────────────────────────────────────────────
 
     /// Open the per-peer route drill-down for the currently selected peer.
     pub fn open_peer_route_view(&mut self, dir: crate::bgp::PeerRouteDirection) {
-        let ip = match self.peer_table_state.selected()
+        let ip = match self
+            .peer_table_state
+            .selected()
             .and_then(|i| self.peer_indices.get(i))
             .and_then(|&idx| self.current_peers.get(idx))
         {
             Some(p) => p.neighbor_ip,
-            None    => return,
+            None => return,
         };
         self.peer_route_view = Some(PeerRouteView {
-            peer_ip:   ip,
+            peer_ip: ip,
             direction: dir,
-            routes:    None,
-            error:     None,
+            routes: None,
+            error: None,
         });
         self.peer_route_table_state = TableState::default();
-        self.spawn_peer_routes_fetch(ip, dir);
+        self.request_peer_routes_fetch(ip, dir);
         self.set_status(format!("Fetching {} routes for {}…", dir.label(), ip));
     }
 
@@ -789,58 +817,41 @@ impl App {
         let (ip, dir) = match self.peer_route_view.as_mut() {
             Some(view) => {
                 view.direction = view.direction.toggle();
-                view.routes    = None;
-                view.error     = None;
+                view.routes = None;
+                view.error = None;
                 (view.peer_ip, view.direction)
             }
             None => return,
         };
         self.peer_route_table_state = TableState::default();
-        self.spawn_peer_routes_fetch(ip, dir);
+        self.request_peer_routes_fetch(ip, dir);
         self.set_status(format!("Fetching {} routes for {}…", dir.label(), ip));
     }
 
-    /// Spawn a background SSH fetch for per-peer routes.
-    pub fn spawn_peer_routes_fetch(&self, ip: IpAddr, dir: crate::bgp::PeerRouteDirection) {
-        let Some(router) = self.selected_router().cloned() else { return };
-        let Some(tx)     = self.event_tx.clone() else { return };
-        tokio::spawn(async move {
-            let result = match router.vendor {
-                RouterVendor::Cisco => {
-                    let b = crate::router::cisco::CiscoBackend::new(&router);
-                    b.get_peer_routes(ip, dir).await
-                }
-                RouterVendor::VyOs => {
-                    let b = crate::router::vyos::VyOsBackend::new(&router);
-                    b.get_peer_routes(ip, dir).await
-                }
-                RouterVendor::CitrixVpx => {
-                    let b = crate::router::citrix::CitrixVpxBackend::new(&router);
-                    b.get_peer_routes(ip, dir).await
-                }
-                RouterVendor::PfSense => {
-                    let b = crate::router::pfsense::PfSenseBackend::new(&router);
-                    b.get_peer_routes(ip, dir).await
-                }
-                RouterVendor::FortiGate => {
-                    let b = crate::router::fortigate::FortiGateBackend::new(&router);
-                    b.get_peer_routes(ip, dir).await
-                }
-            };
-            match result {
-                Ok(routes) => { let _ = tx.send(AppEvent::PeerRoutes(router.id, ip, dir, routes)); }
-                Err(e)     => { let _ = tx.send(AppEvent::PeerRoutesError(router.id, ip, dir, e.to_string())); }
-            }
+    fn request_peer_routes_fetch(&self, ip: IpAddr, dir: crate::bgp::PeerRouteDirection) {
+        let Some(router) = self.selected_router() else {
+            return;
+        };
+        self.send_fetch(FetchRequest::FetchPeerRoutes {
+            router_id: router.id,
+            ip,
+            dir,
         });
     }
 
     /// Called when per-peer routes arrive from the background task.
-    pub fn handle_peer_routes(&mut self, _id: Uuid, ip: IpAddr, dir: crate::bgp::PeerRouteDirection, routes: Vec<BgpRoute>) {
+    pub fn handle_peer_routes(
+        &mut self,
+        _id: Uuid,
+        ip: IpAddr,
+        dir: crate::bgp::PeerRouteDirection,
+        routes: Vec<BgpRoute>,
+    ) {
         let count = routes.len();
         if let Some(view) = self.peer_route_view.as_mut() {
             if view.peer_ip == ip && view.direction == dir {
                 view.routes = Some(routes);
-                view.error  = None;
+                view.error = None;
             } else {
                 return;
             }
@@ -850,48 +861,44 @@ impl App {
         if count > 0 {
             self.peer_route_table_state.select(Some(0));
         }
-        self.set_status(format!("{} {} routes for {}", count, dir.label().to_lowercase(), ip));
+        self.set_status(format!(
+            "{} {} routes for {}",
+            count,
+            dir.label().to_lowercase(),
+            ip
+        ));
     }
 
     /// Called when a per-peer routes fetch fails.
-    pub fn handle_peer_routes_error(&mut self, _id: Uuid, ip: IpAddr, dir: crate::bgp::PeerRouteDirection, err: String) {
+    pub fn handle_peer_routes_error(
+        &mut self,
+        _id: Uuid,
+        ip: IpAddr,
+        dir: crate::bgp::PeerRouteDirection,
+        err: String,
+    ) {
         if let Some(view) = self.peer_route_view.as_mut() {
             if view.peer_ip == ip && view.direction == dir {
-                view.error  = Some(err.clone());
+                view.error = Some(err.clone());
                 view.routes = Some(vec![]);
             }
         }
-        self.log(format!("Peer routes error {ip}: {err}"));
+        tracing::warn!(peer = %ip, direction = %dir.label(), error = %err, "peer routes fetch failed");
+        self.conn_log(format!(
+            "Peer routes error {ip}: {}",
+            truncate_error(&err, 60)
+        ));
     }
 
     // ── Path-MTU probe ───────────────────────────────────────────────────────────
 
-    /// Spawn a background DF-bit ping from the selected router to `target`.
-    pub fn spawn_mtu_probe(&self, target: IpAddr) {
-        let Some(router) = self.selected_router().cloned() else { return };
-        let Some(tx)     = self.event_tx.clone()           else { return };
-        tokio::spawn(async move {
-            let result = match router.vendor {
-                RouterVendor::Cisco => {
-                    crate::router::cisco::CiscoBackend::new(&router).ping_mtu(target).await
-                }
-                RouterVendor::VyOs => {
-                    crate::router::vyos::VyOsBackend::new(&router).ping_mtu(target).await
-                }
-                RouterVendor::CitrixVpx => {
-                    crate::router::citrix::CitrixVpxBackend::new(&router).ping_mtu(target).await
-                }
-                RouterVendor::PfSense => {
-                    crate::router::pfsense::PfSenseBackend::new(&router).ping_mtu(target).await
-                }
-                RouterVendor::FortiGate => {
-                    crate::router::fortigate::FortiGateBackend::new(&router).ping_mtu(target).await
-                }
-            };
-            match result {
-                Ok(bytes) => { let _ = tx.send(AppEvent::MtuProbeResult(router.id, target, bytes)); }
-                Err(e)    => { let _ = tx.send(AppEvent::MtuProbeError(router.id, target, e.to_string())); }
-            }
+    pub fn request_mtu_probe(&self, target: IpAddr) {
+        let Some(router) = self.selected_router() else {
+            return;
+        };
+        self.send_fetch(FetchRequest::FetchMtu {
+            router_id: router.id,
+            target,
         });
     }
 
@@ -909,10 +916,10 @@ impl App {
             peer.mtu_probe = Some(state.clone());
         }
         let msg = match &state {
-            MtuProbeState::Ok(n)       => format!("MTU probe {ip}: OK (path MTU ≥ {n} B)"),
+            MtuProbeState::Ok(n) => format!("MTU probe {ip}: OK (path MTU ≥ {n} B)"),
             MtuProbeState::Degraded(n) => format!("MTU probe {ip}: degraded — max frame {n} B"),
-            MtuProbeState::Failed(e)   => format!("MTU probe {ip}: failed — {e}"),
-            MtuProbeState::Running     => unreachable!(),
+            MtuProbeState::Failed(e) => format!("MTU probe {ip}: failed — {e}"),
+            MtuProbeState::Running => unreachable!(),
         };
         self.set_status(msg);
     }
@@ -922,7 +929,11 @@ impl App {
         if let Some(peer) = self.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
             peer.mtu_probe = Some(crate::bgp::MtuProbeState::Failed(err.clone()));
         }
-        self.log(format!("MTU probe error {ip}: {err}"));
+        tracing::warn!(target = %ip, error = %err, "MTU probe failed");
+        self.conn_log(format!(
+            "MTU probe error {ip}: {}",
+            truncate_error(&err, 60)
+        ));
         self.set_status(format!("MTU probe to {ip} failed"));
     }
 
@@ -963,10 +974,15 @@ impl App {
     /// Rebuild `self.routers` from visible set and reset selection.
     pub fn apply_project_filter(&mut self) {
         let ids: Option<Vec<Uuid>> = self.active_project.and_then(|pid| {
-            self.projects.iter().find(|p| p.id == pid).map(|p| p.router_ids.clone())
+            self.projects
+                .iter()
+                .find(|p| p.id == pid)
+                .map(|p| p.router_ids.clone())
         });
         self.routers = match ids {
-            Some(ref ids) => self.all_routers.iter()
+            Some(ref ids) => self
+                .all_routers
+                .iter()
                 .filter(|r| ids.contains(&r.id))
                 .cloned()
                 .collect(),
@@ -986,7 +1002,10 @@ impl App {
     /// Active project name for display.
     pub fn active_project_name(&self) -> Option<&str> {
         self.active_project.and_then(|pid| {
-            self.projects.iter().find(|p| p.id == pid).map(|p| p.name.as_str())
+            self.projects
+                .iter()
+                .find(|p| p.id == pid)
+                .map(|p| p.name.as_str())
         })
     }
 
@@ -1012,7 +1031,7 @@ impl App {
 
     pub fn project_add(&mut self) {
         self.project_editor_mode = ProjectEditorMode::EditName;
-        self.project_editor_buf  = String::new();
+        self.project_editor_buf = String::new();
         self.set_status("Enter project name — Enter: save  Esc: cancel");
     }
 
@@ -1049,7 +1068,8 @@ impl App {
                 if self.projects.is_empty() {
                     self.project_list_state.select(None);
                 } else {
-                    self.project_list_state.select(Some(idx.min(self.projects.len() - 1)));
+                    self.project_list_state
+                        .select(Some(idx.min(self.projects.len() - 1)));
                 }
             }
         }
@@ -1068,19 +1088,19 @@ impl App {
     pub fn project_toggle_router(&mut self) {
         let proj_idx = match self.project_list_state.selected() {
             Some(i) => i,
-            None    => return,
+            None => return,
         };
         let router_idx = match self.project_toggle_state.selected() {
             Some(i) => i,
-            None    => return,
+            None => return,
         };
         let rid = match self.all_routers.get(router_idx) {
             Some(r) => r.id,
-            None    => return,
+            None => return,
         };
         let proj = match self.projects.get_mut(proj_idx) {
             Some(p) => p,
-            None    => return,
+            None => return,
         };
         if let Some(pos) = proj.router_ids.iter().position(|&id| id == rid) {
             proj.router_ids.remove(pos);
@@ -1092,13 +1112,20 @@ impl App {
         // Re-apply filter if this is the active project
         if self.active_project == Some(proj_snapshot.id) {
             let ids = proj_snapshot.router_ids;
-            self.routers = self.all_routers.iter()
+            self.routers = self
+                .all_routers
+                .iter()
                 .filter(|r| ids.contains(&r.id))
                 .cloned()
                 .collect();
             if self.routers.is_empty() {
                 self.router_list_state.select(None);
-            } else if self.router_list_state.selected().map(|i| i >= self.routers.len()).unwrap_or(true) {
+            } else if self
+                .router_list_state
+                .selected()
+                .map(|i| i >= self.routers.len())
+                .unwrap_or(true)
+            {
                 self.router_list_state.select(Some(0));
             }
         }
@@ -1123,10 +1150,10 @@ impl App {
     // ── Router editor ─────────────────────────────────────────────────────────
 
     pub fn editor_start_add(&mut self) {
-        self.editor_draft  = Some(RouterConfig::default());
-        self.editor_field  = 0;
-        self.editor_buf    = String::new();
-        self.editor_mode   = EditorMode::EditField;
+        self.editor_draft = Some(RouterConfig::default());
+        self.editor_field = 0;
+        self.editor_buf = String::new();
+        self.editor_mode = EditorMode::EditField;
         self.set_status("New router — Tab/Enter: next field  Shift-Tab: prev  Esc: cancel");
     }
 
@@ -1134,11 +1161,13 @@ impl App {
         if let Some(idx) = self.editor_list_state.selected() {
             if let Some(router) = self.routers.get(idx) {
                 let draft = router.clone();
-                self.editor_buf   = editor_field_value(&draft, 0);
+                self.editor_buf = editor_field_value(&draft, 0);
                 self.editor_field = 0;
                 self.editor_draft = Some(draft);
-                self.editor_mode  = EditorMode::EditField;
-                self.set_status("Editing router — Tab/Enter: next field  Shift-Tab: prev  Esc: cancel");
+                self.editor_mode = EditorMode::EditField;
+                self.set_status(
+                    "Editing router — Tab/Enter: next field  Shift-Tab: prev  Esc: cancel",
+                );
             }
         }
     }
@@ -1159,7 +1188,8 @@ impl App {
                 if self.routers.is_empty() {
                     self.editor_list_state.select(None);
                 } else {
-                    self.editor_list_state.select(Some(idx.min(self.routers.len() - 1)));
+                    self.editor_list_state
+                        .select(Some(idx.min(self.routers.len() - 1)));
                 }
                 self.set_status(format!("Deleted '{}' — saved to DB", removed.name));
             }
@@ -1262,19 +1292,33 @@ pub fn editor_field_value(r: &RouterConfig, field: usize) -> String {
 
 pub fn apply_buf_to_draft(draft: &mut RouterConfig, field: usize, buf: &str) {
     match field {
-        0 => draft.name     = buf.to_string(),
+        0 => draft.name = buf.to_string(),
         1 => draft.hostname = buf.to_string(),
         2 => draft.ssh_port = buf.parse().unwrap_or(22),
         3 => draft.username = buf.to_string(),
-        4 => draft.password = if buf.is_empty() { None } else { Some(buf.to_string()) },
-        5 => draft.vendor   = match buf.to_lowercase().as_str() {
-                 "vyos"      => RouterVendor::VyOs,
-                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
-                 "pfsense"   => RouterVendor::PfSense,
-                 "fortigate" => RouterVendor::FortiGate,
-                 _           => RouterVendor::Cisco,
-             },
-        6 => draft.vdom     = if buf.is_empty() { None } else { Some(buf.to_string()) },
+        4 => {
+            draft.password = if buf.is_empty() {
+                None
+            } else {
+                Some(buf.to_string())
+            }
+        }
+        5 => {
+            draft.vendor = match buf.to_lowercase().as_str() {
+                "vyos" => RouterVendor::VyOs,
+                "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
+                "pfsense" => RouterVendor::PfSense,
+                "fortigate" => RouterVendor::FortiGate,
+                _ => RouterVendor::Cisco,
+            }
+        }
+        6 => {
+            draft.vdom = if buf.is_empty() {
+                None
+            } else {
+                Some(buf.to_string())
+            }
+        }
         _ => {}
     }
 }
@@ -1284,6 +1328,16 @@ fn extract_routemap_name_from_line(line: &str) -> Option<String> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     let pos = parts.iter().position(|&p| p == "route-map")?;
     parts.get(pos + 1).map(|s| s.to_string())
+}
+
+/// Truncate an error message to at most `max` chars for compact UI display.
+fn truncate_error(s: &str, max: usize) -> String {
+    let line = s.lines().next().unwrap_or(s);
+    if line.len() <= max {
+        line.to_string()
+    } else {
+        format!("{}…", &line[..max])
+    }
 }
 
 // ─── Key Handler ─────────────────────────────────────────────────────────────
@@ -1300,18 +1354,20 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.editor_buf.clear();
                 app.set_status("Edit cancelled");
             }
-            KeyCode::Backspace => { app.editor_buf.pop(); }
-            KeyCode::Tab       => app.editor_commit_and_advance(),
-            KeyCode::Enter     => app.editor_commit_and_advance(),
-            KeyCode::BackTab   => app.editor_commit_and_retreat(),
+            KeyCode::Backspace => {
+                app.editor_buf.pop();
+            }
+            KeyCode::Tab => app.editor_commit_and_advance(),
+            KeyCode::Enter => app.editor_commit_and_advance(),
+            KeyCode::BackTab => app.editor_commit_and_retreat(),
             // Vendor field (5): Space cycles Cisco ↔ VyOs; other chars are ignored
             KeyCode::Char(' ') if app.editor_field == 5 => {
                 if let Some(draft) = app.editor_draft.as_mut() {
                     draft.vendor = match draft.vendor {
-                        RouterVendor::Cisco     => RouterVendor::VyOs,
-                        RouterVendor::VyOs      => RouterVendor::CitrixVpx,
+                        RouterVendor::Cisco => RouterVendor::VyOs,
+                        RouterVendor::VyOs => RouterVendor::CitrixVpx,
                         RouterVendor::CitrixVpx => RouterVendor::PfSense,
-                        RouterVendor::PfSense   => RouterVendor::FortiGate,
+                        RouterVendor::PfSense => RouterVendor::FortiGate,
                         RouterVendor::FortiGate => RouterVendor::Cisco,
                     };
                     app.editor_buf = draft.vendor.to_string();
@@ -1320,7 +1376,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             KeyCode::Char(_) if app.editor_field == 5 => {
                 // vendor field is cycle-only; ignore free text
             }
-            KeyCode::Char(c)   => app.editor_buf.push(c),
+            KeyCode::Char(c) => app.editor_buf.push(c),
             _ => {}
         }
         return;
@@ -1335,9 +1391,11 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         app.project_editor_mode = ProjectEditorMode::Browse;
                         app.project_editor_buf.clear();
                     }
-                    KeyCode::Backspace => { app.project_editor_buf.pop(); }
-                    KeyCode::Enter     => app.project_save_name(),
-                    KeyCode::Char(c)   => app.project_editor_buf.push(c),
+                    KeyCode::Backspace => {
+                        app.project_editor_buf.pop();
+                    }
+                    KeyCode::Enter => app.project_save_name(),
+                    KeyCode::Char(c) => app.project_editor_buf.push(c),
                     _ => {}
                 }
                 return;
@@ -1348,18 +1406,22 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         app.project_editor_mode = ProjectEditorMode::Browse;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        if app.all_routers.is_empty() { return; }
+                        if app.all_routers.is_empty() {
+                            return;
+                        }
                         let next = match app.project_toggle_state.selected() {
                             Some(0) | None => app.all_routers.len() - 1,
-                            Some(i)        => i - 1,
+                            Some(i) => i - 1,
                         };
                         app.project_toggle_state.select(Some(next));
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if app.all_routers.is_empty() { return; }
+                        if app.all_routers.is_empty() {
+                            return;
+                        }
                         let next = match app.project_toggle_state.selected() {
                             Some(i) => (i + 1) % app.all_routers.len(),
-                            None    => 0,
+                            None => 0,
                         };
                         app.project_toggle_state.select(Some(next));
                     }
@@ -1374,18 +1436,22 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         app.project_popup = false;
                     }
                     KeyCode::Up | KeyCode::Char('k') => {
-                        if app.projects.is_empty() { return; }
+                        if app.projects.is_empty() {
+                            return;
+                        }
                         let next = match app.project_list_state.selected() {
                             Some(0) | None => app.projects.len() - 1,
-                            Some(i)        => i - 1,
+                            Some(i) => i - 1,
                         };
                         app.project_list_state.select(Some(next));
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        if app.projects.is_empty() { return; }
+                        if app.projects.is_empty() {
+                            return;
+                        }
                         let next = match app.project_list_state.selected() {
                             Some(i) => (i + 1) % app.projects.len(),
-                            None    => 0,
+                            None => 0,
                         };
                         app.project_list_state.select(Some(next));
                     }
@@ -1468,52 +1534,64 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     if app.peer_route_view.is_some() && app.current_tab == ActiveTab::Peers {
         use crate::bgp::PeerRouteDirection;
         match key.code {
-            KeyCode::Esc => { app.close_peer_route_view(); }
+            KeyCode::Esc => {
+                app.close_peer_route_view();
+            }
             KeyCode::Char('i') => {
-                if app.peer_route_view.as_ref().map(|v| v.direction) != Some(PeerRouteDirection::Received) {
+                if app.peer_route_view.as_ref().map(|v| v.direction)
+                    != Some(PeerRouteDirection::Received)
+                {
                     app.toggle_peer_route_direction();
                 }
             }
             KeyCode::Char('o') => {
-                if app.peer_route_view.as_ref().map(|v| v.direction) != Some(PeerRouteDirection::Advertised) {
+                if app.peer_route_view.as_ref().map(|v| v.direction)
+                    != Some(PeerRouteDirection::Advertised)
+                {
                     app.toggle_peer_route_direction();
                 }
             }
-            KeyCode::Tab => { app.toggle_peer_route_direction(); }
+            KeyCode::Tab => {
+                app.toggle_peer_route_direction();
+            }
             KeyCode::Char('r') | KeyCode::F(5) => {
                 let (ip, dir) = match app.peer_route_view.as_mut() {
                     Some(view) => {
                         view.routes = None;
-                        view.error  = None;
+                        view.error = None;
                         (view.peer_ip, view.direction)
                     }
                     None => return,
                 };
-                app.spawn_peer_routes_fetch(ip, dir);
+                app.request_peer_routes_fetch(ip, dir);
                 app.set_status(format!("Refreshing {} routes for {}…", dir.label(), ip));
             }
             KeyCode::Up | KeyCode::Char('k') => {
-                let len = app.peer_route_view.as_ref()
+                let len = app
+                    .peer_route_view
+                    .as_ref()
                     .and_then(|v| v.routes.as_ref())
                     .map(|r: &Vec<BgpRoute>| r.len())
                     .unwrap_or(0);
                 if len > 0 {
                     let next = match app.peer_route_table_state.selected() {
                         Some(0) | None => len - 1,
-                        Some(i)        => i - 1,
+                        Some(i) => i - 1,
                     };
                     app.peer_route_table_state.select(Some(next));
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                let len = app.peer_route_view.as_ref()
+                let len = app
+                    .peer_route_view
+                    .as_ref()
                     .and_then(|v| v.routes.as_ref())
                     .map(|r: &Vec<BgpRoute>| r.len())
                     .unwrap_or(0);
                 if len > 0 {
                     let next = match app.peer_route_table_state.selected() {
                         Some(i) => (i + 1) % len,
-                        None    => 0,
+                        None => 0,
                     };
                     app.peer_route_table_state.select(Some(next));
                 }
@@ -1538,7 +1616,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
     match key.code {
         // ── Tab switching ────────────────────────────────────────────────────
-        KeyCode::Tab     => {
+        KeyCode::Tab => {
             // Auto-apply pending update when leaving Config tab
             if app.current_tab == ActiveTab::Config && app.has_pending_update {
                 app.accept_pending_update();
@@ -1551,16 +1629,52 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             }
             app.current_tab = app.current_tab.prev();
         }
-        KeyCode::Char('1') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Dashboard; app.bgp_refresh_tick = 149; }
-        KeyCode::Char('2') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Peers; app.bgp_refresh_tick = 149; }
-        KeyCode::Char('3') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Routes; app.bgp_refresh_tick = 149; }
+        KeyCode::Char('1') => {
+            if app.current_tab == ActiveTab::Config && app.has_pending_update {
+                app.accept_pending_update();
+            }
+            app.current_tab = ActiveTab::Dashboard;
+            app.bgp_refresh_tick = 149;
+        }
+        KeyCode::Char('2') => {
+            if app.current_tab == ActiveTab::Config && app.has_pending_update {
+                app.accept_pending_update();
+            }
+            app.current_tab = ActiveTab::Peers;
+            app.bgp_refresh_tick = 149;
+        }
+        KeyCode::Char('3') => {
+            if app.current_tab == ActiveTab::Config && app.has_pending_update {
+                app.accept_pending_update();
+            }
+            app.current_tab = ActiveTab::Routes;
+            app.bgp_refresh_tick = 149;
+        }
         KeyCode::Char('4') => app.current_tab = ActiveTab::Config,
-        KeyCode::Char('5') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Logs; app.bgp_refresh_tick = 149; }
-        KeyCode::Char('6') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::Routers; app.bgp_refresh_tick = 149; }
-        KeyCode::Char('7') => { if app.current_tab == ActiveTab::Config && app.has_pending_update { app.accept_pending_update(); } app.current_tab = ActiveTab::ConnLog; app.bgp_refresh_tick = 149; }
+        KeyCode::Char('5') => {
+            if app.current_tab == ActiveTab::Config && app.has_pending_update {
+                app.accept_pending_update();
+            }
+            app.current_tab = ActiveTab::Logs;
+            app.bgp_refresh_tick = 149;
+        }
+        KeyCode::Char('6') => {
+            if app.current_tab == ActiveTab::Config && app.has_pending_update {
+                app.accept_pending_update();
+            }
+            app.current_tab = ActiveTab::Routers;
+            app.bgp_refresh_tick = 149;
+        }
+        KeyCode::Char('7') => {
+            if app.current_tab == ActiveTab::Config && app.has_pending_update {
+                app.accept_pending_update();
+            }
+            app.current_tab = ActiveTab::ConnLog;
+            app.bgp_refresh_tick = 149;
+        }
 
         // ── Navigation ───────────────────────────────────────────────────────
-        KeyCode::Up   | KeyCode::Char('k') => navigate_up(app),
+        KeyCode::Up | KeyCode::Char('k') => navigate_up(app),
         KeyCode::Down | KeyCode::Char('j') => navigate_down(app),
 
         // ── Open filter (Peers / Routes tab) ──────────────────────────────────
@@ -1572,14 +1686,16 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         }
 
         // ── Dismiss active filter with Esc (Peers / Routes tab) ──────────────────
-        KeyCode::Esc if app.current_tab == ActiveTab::Peers
-            && app.peer_filter_mode != FilterMode::Off => {
+        KeyCode::Esc
+            if app.current_tab == ActiveTab::Peers && app.peer_filter_mode != FilterMode::Off =>
+        {
             app.peer_filter.clear();
             app.peer_filter_mode = FilterMode::Off;
             app.update_peer_filter();
         }
-        KeyCode::Esc if app.current_tab == ActiveTab::Routes
-            && app.route_filter_mode != FilterMode::Off => {
+        KeyCode::Esc
+            if app.current_tab == ActiveTab::Routes && app.route_filter_mode != FilterMode::Off =>
+        {
             app.route_filter.clear();
             app.route_filter_mode = FilterMode::Off;
             app.update_route_filter();
@@ -1600,9 +1716,10 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
         // ── Refresh ──────────────────────────────────────────────────────────
         KeyCode::Char('r') | KeyCode::F(5) => {
             app.reload_selected_router();
+            app.request_refresh_selected();
             app.set_status("Refreshing…");
             app.log("Manual refresh triggered");
-            app.spawn_ping();
+            app.request_ping();
         }
 
         // ── Accept / dismiss pending BGP update (Config tab) ─────────────────
@@ -1620,7 +1737,9 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             if !app.projects.is_empty() && app.project_list_state.selected().is_none() {
                 app.project_list_state.select(Some(0));
             }
-            app.set_status("Projects — Enter: switch  a: add  d: delete  e: edit routers  0: all  Esc: close");
+            app.set_status(
+                "Projects — Enter: switch  a: add  d: delete  e: edit routers  0: all  Esc: close",
+            );
         }
 
         // ── Router editor actions (Routers tab only) ──────────────────────────
@@ -1650,7 +1769,9 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // ── Path-MTU probe (Peers tab) ──────────────────────────────────────
         KeyCode::Char('m') if app.current_tab == ActiveTab::Peers => {
-            if let Some(ip) = app.peer_table_state.selected()
+            if let Some(ip) = app
+                .peer_table_state
+                .selected()
                 .and_then(|i| app.peer_indices.get(i))
                 .and_then(|&idx| app.current_peers.get(idx))
                 .map(|p| p.neighbor_ip)
@@ -1659,7 +1780,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 if let Some(peer) = app.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
                     peer.mtu_probe = Some(crate::bgp::MtuProbeState::Running);
                 }
-                app.spawn_mtu_probe(ip);
+                app.request_mtu_probe(ip);
                 app.set_status(format!("Running MTU probe to {ip}…"));
             }
         }
@@ -1671,62 +1792,76 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 fn navigate_up(app: &mut App) {
     match app.current_tab {
         ActiveTab::Dashboard => {
-            if app.routers.is_empty() { return; }
+            if app.routers.is_empty() {
+                return;
+            }
             let next = match app.router_list_state.selected() {
                 Some(0) | None => app.routers.len() - 1,
-                Some(i)        => i - 1,
+                Some(i) => i - 1,
             };
             app.router_list_state.select(Some(next));
             app.reload_selected_router();
         }
         ActiveTab::Peers => {
-            if app.peer_indices.is_empty() { return; }
+            if app.peer_indices.is_empty() {
+                return;
+            }
             let len = app.peer_indices.len();
             let next = match app.peer_table_state.selected() {
                 Some(0) | None => len - 1,
-                Some(i)        => i - 1,
+                Some(i) => i - 1,
             };
             app.peer_table_state.select(Some(next));
         }
         ActiveTab::Routes => {
-            if app.route_indices.is_empty() { return; }
+            if app.route_indices.is_empty() {
+                return;
+            }
             let len = app.route_indices.len();
             let next = match app.route_table_state.selected() {
                 Some(0) | None => len - 1,
-                Some(i)        => i - 1,
+                Some(i) => i - 1,
             };
             app.route_table_state.select(Some(next));
         }
         ActiveTab::Logs => {
-            if app.logs.is_empty() { return; }
+            if app.logs.is_empty() {
+                return;
+            }
             let next = match app.log_list_state.selected() {
                 Some(0) | None => app.logs.len() - 1,
-                Some(i)        => i - 1,
+                Some(i) => i - 1,
             };
             app.log_list_state.select(Some(next));
         }
         ActiveTab::Config => {
-            if app.config_lines.is_empty() { return; }
+            if app.config_lines.is_empty() {
+                return;
+            }
             let next = match app.config_list_state.selected() {
                 Some(0) | None => app.config_lines.len() - 1,
-                Some(i)        => i - 1,
+                Some(i) => i - 1,
             };
             app.config_list_state.select(Some(next));
             app.on_config_nav();
         }
         ActiveTab::Routers => {
-            if app.routers.is_empty() { return; }
+            if app.routers.is_empty() {
+                return;
+            }
             let next = match app.editor_list_state.selected() {
                 Some(0) | None => app.routers.len() - 1,
-                Some(i)        => i - 1,
+                Some(i) => i - 1,
             };
             app.editor_list_state.select(Some(next));
         }
         ActiveTab::ConnLog => {
-            if app.conn_logs.is_empty() { return; }
+            if app.conn_logs.is_empty() {
+                return;
+            }
             let next = match app.conn_log_state.selected() {
                 Some(0) | None => app.conn_logs.len() - 1,
-                Some(i)        => i - 1,
+                Some(i) => i - 1,
             };
             app.conn_log_state.select(Some(next));
         }
@@ -1736,64 +1871,76 @@ fn navigate_up(app: &mut App) {
 fn navigate_down(app: &mut App) {
     match app.current_tab {
         ActiveTab::Dashboard => {
-            if app.routers.is_empty() { return; }
+            if app.routers.is_empty() {
+                return;
+            }
             let next = match app.router_list_state.selected() {
                 Some(i) => (i + 1) % app.routers.len(),
-                None    => 0,
+                None => 0,
             };
             app.router_list_state.select(Some(next));
             app.reload_selected_router();
         }
         ActiveTab::Peers => {
-            if app.peer_indices.is_empty() { return; }
+            if app.peer_indices.is_empty() {
+                return;
+            }
             let next = match app.peer_table_state.selected() {
                 Some(i) => (i + 1) % app.peer_indices.len(),
-                None    => 0,
+                None => 0,
             };
             app.peer_table_state.select(Some(next));
         }
         ActiveTab::Routes => {
-            if app.route_indices.is_empty() { return; }
+            if app.route_indices.is_empty() {
+                return;
+            }
             let next = match app.route_table_state.selected() {
                 Some(i) => (i + 1) % app.route_indices.len(),
-                None    => 0,
+                None => 0,
             };
             app.route_table_state.select(Some(next));
         }
         ActiveTab::Logs => {
-            if app.logs.is_empty() { return; }
+            if app.logs.is_empty() {
+                return;
+            }
             let next = match app.log_list_state.selected() {
                 Some(i) => (i + 1) % app.logs.len(),
-                None    => 0,
+                None => 0,
             };
             app.log_list_state.select(Some(next));
         }
         ActiveTab::Config => {
-            if app.config_lines.is_empty() { return; }
+            if app.config_lines.is_empty() {
+                return;
+            }
             let next = match app.config_list_state.selected() {
                 Some(i) => (i + 1) % app.config_lines.len(),
-                None    => 0,
+                None => 0,
             };
             app.config_list_state.select(Some(next));
             app.on_config_nav();
         }
         ActiveTab::Routers => {
-            if app.routers.is_empty() { return; }
+            if app.routers.is_empty() {
+                return;
+            }
             let next = match app.editor_list_state.selected() {
                 Some(i) => (i + 1) % app.routers.len(),
-                None    => 0,
+                None => 0,
             };
             app.editor_list_state.select(Some(next));
         }
         ActiveTab::ConnLog => {
-            if app.conn_logs.is_empty() { return; }
+            if app.conn_logs.is_empty() {
+                return;
+            }
             let next = match app.conn_log_state.selected() {
                 Some(i) => (i + 1) % app.conn_logs.len(),
-                None    => 0,
+                None => 0,
             };
             app.conn_log_state.select(Some(next));
         }
     }
 }
-
-

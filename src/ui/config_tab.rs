@@ -36,16 +36,28 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
     // Draw pending-update notification banner
     if let Some(banner) = banner_area {
         let text = Line::from(vec![
-            Span::styled(" ● ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " ● ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled("BGP data updated", Style::default().fg(Color::Yellow)),
             Span::styled(" — press ", Style::default().fg(C_DIM)),
-            Span::styled("y", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "y",
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" to apply, ", Style::default().fg(C_DIM)),
-            Span::styled("n", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "n",
+                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" to dismiss", Style::default().fg(C_DIM)),
         ]);
-        let para = Paragraph::new(text)
-            .style(Style::default().bg(Color::DarkGray));
+        let para = Paragraph::new(text).style(Style::default().bg(Color::DarkGray));
         f.render_widget(para, banner);
     }
 }
@@ -94,11 +106,19 @@ fn draw_config_list(f: &mut Frame, app: &mut App, area: Rect) {
 fn syntax_highlight(line: &str) -> Line<'static> {
     let s = line.to_string();
     if s.trim_start().starts_with("router bgp") {
-        return Line::from(Span::styled(s, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)));
+        return Line::from(Span::styled(
+            s,
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ));
     }
     // route-map lines are interactive — make them stand out
     if s.contains("route-map") {
-        return Line::from(Span::styled(s, Style::default().fg(C_WARN).add_modifier(Modifier::BOLD)));
+        return Line::from(Span::styled(
+            s,
+            Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
+        ));
     }
     if s.contains("remote-as") {
         return Line::from(Span::styled(s, Style::default().fg(Color::LightBlue)));
@@ -136,27 +156,39 @@ fn draw_right_panel(f: &mut Frame, app: &App, area: Rect) {
 // ─── Route-map detail ─────────────────────────────────────────────────────────
 
 fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect, scroll: u16) {
-    let permit_sty  = Style::default().fg(C_ESTABLISHED).add_modifier(Modifier::BOLD);
-    let deny_sty    = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
-    let match_hdr   = Style::default().fg(Color::LightBlue).add_modifier(Modifier::UNDERLINED);
-    let set_hdr     = Style::default().fg(Color::LightGreen).add_modifier(Modifier::UNDERLINED);
-    let clause_sty  = Style::default().fg(Color::White);
-    let ref_sty     = Style::default().fg(C_WARN);
-    let pfx_permit  = Style::default().fg(C_ESTABLISHED);
-    let pfx_deny    = Style::default().fg(Color::Red);
-    let dim         = Style::default().fg(C_DIM);
-    let seq_sty     = Style::default().fg(Color::DarkGray);
+    let permit_sty = Style::default()
+        .fg(C_ESTABLISHED)
+        .add_modifier(Modifier::BOLD);
+    let deny_sty = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let match_hdr = Style::default()
+        .fg(Color::LightBlue)
+        .add_modifier(Modifier::UNDERLINED);
+    let set_hdr = Style::default()
+        .fg(Color::LightGreen)
+        .add_modifier(Modifier::UNDERLINED);
+    let clause_sty = Style::default().fg(Color::White);
+    let ref_sty = Style::default().fg(C_WARN);
+    let pfx_permit = Style::default().fg(C_ESTABLISHED);
+    let pfx_deny = Style::default().fg(Color::Red);
+    let dim = Style::default().fg(C_DIM);
+    let seq_sty = Style::default().fg(Color::DarkGray);
 
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             format!("  route-map {}", rm.name),
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::raw("")),
     ];
 
     for entry in &rm.entries {
-        let action_sty = if entry.action.contains("permit") { permit_sty } else { deny_sty };
+        let action_sty = if entry.action.contains("permit") {
+            permit_sty
+        } else {
+            deny_sty
+        };
         lines.push(Line::from(vec![
             Span::styled(format!("  seq {:>4}  ", entry.sequence), seq_sty),
             Span::styled(entry.action.to_uppercase(), action_sty),
@@ -167,17 +199,33 @@ fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect, scroll: 
             lines.push(Line::from(Span::styled("    match:", match_hdr)));
             for clause in &entry.match_clauses {
                 if clause.contains("prefix-list") {
-                    lines.push(Line::from(Span::styled(format!("      {clause}"), clause_sty)));
+                    lines.push(Line::from(Span::styled(
+                        format!("      {clause}"),
+                        clause_sty,
+                    )));
                     // Expand each referenced prefix-list inline
-                    let names_part = clause.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
+                    let names_part = clause
+                        .split_once(':')
+                        .map(|x| x.1)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
                     for pname in names_part.split_whitespace() {
-                        lines.push(Line::from(Span::styled(format!("        ▸ {pname}"), ref_sty)));
+                        lines.push(Line::from(Span::styled(
+                            format!("        ▸ {pname}"),
+                            ref_sty,
+                        )));
                         match rm.prefix_lists.get(pname) {
                             Some(pl) if !pl.is_empty() => {
                                 for pe in pl {
-                                    let ps = if pe.action == "permit" { pfx_permit } else { pfx_deny };
+                                    let ps = if pe.action == "permit" {
+                                        pfx_permit
+                                    } else {
+                                        pfx_deny
+                                    };
                                     lines.push(Line::from(Span::styled(
-                                        format!("          {} {}", pe.action, pe.prefix), ps,
+                                        format!("          {} {}", pe.action, pe.prefix),
+                                        ps,
                                     )));
                                 }
                             }
@@ -187,15 +235,27 @@ fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect, scroll: 
                         }
                     }
                 } else if clause.starts_with("community") && clause.contains(':') {
-                    lines.push(Line::from(Span::styled(format!("      {clause}"), clause_sty)));
-                    let names_part = clause.splitn(2, ':').nth(1).unwrap_or("").trim().to_string();
+                    lines.push(Line::from(Span::styled(
+                        format!("      {clause}"),
+                        clause_sty,
+                    )));
+                    let names_part = clause
+                        .split_once(':')
+                        .map(|x| x.1)
+                        .unwrap_or("")
+                        .trim()
+                        .to_string();
                     for cname in names_part.split_whitespace() {
-                        lines.push(Line::from(Span::styled(format!("        ▸ {cname}"), ref_sty)));
+                        lines.push(Line::from(Span::styled(
+                            format!("        ▸ {cname}"),
+                            ref_sty,
+                        )));
                         match rm.community_lists.get(cname) {
                             Some(cl) if !cl.is_empty() => {
                                 for ce in cl {
                                     lines.push(Line::from(Span::styled(
-                                        format!("          {ce}"), clause_sty,
+                                        format!("          {ce}"),
+                                        clause_sty,
                                     )));
                                 }
                             }
@@ -205,7 +265,10 @@ fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect, scroll: 
                         }
                     }
                 } else {
-                    lines.push(Line::from(Span::styled(format!("      {clause}"), clause_sty)));
+                    lines.push(Line::from(Span::styled(
+                        format!("      {clause}"),
+                        clause_sty,
+                    )));
                 }
             }
         } else {
@@ -216,7 +279,10 @@ fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect, scroll: 
         if !entry.set_clauses.is_empty() {
             lines.push(Line::from(Span::styled("    set:", set_hdr)));
             for clause in &entry.set_clauses {
-                lines.push(Line::from(Span::styled(format!("      {clause}"), clause_sty)));
+                lines.push(Line::from(Span::styled(
+                    format!("      {clause}"),
+                    clause_sty,
+                )));
             }
         } else {
             lines.push(Line::from(Span::styled("    set:   (nothing)", dim)));
@@ -251,13 +317,15 @@ fn draw_loading_panel(f: &mut Frame, rm_name: &str, area: Rect) {
             Style::default().fg(C_DIM),
         )),
     ];
-    let para = Paragraph::new(lines)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(C_BORDER))
-                .title(Span::styled(" Route-map Detail ", Style::default().fg(C_SELECTED))),
-        );
+    let para = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(C_BORDER))
+            .title(Span::styled(
+                " Route-map Detail ",
+                Style::default().fg(C_SELECTED),
+            )),
+    );
     f.render_widget(para, area);
 }
 
@@ -265,34 +333,37 @@ fn draw_loading_panel(f: &mut Frame, rm_name: &str, area: Rect) {
 
 fn draw_cli_cheatsheet(f: &mut Frame, area: Rect) {
     let entries: &[(&str, &str)] = &[
-        ("show ip bgp summary",      "BGP peer summary"),
-        ("show ip bgp neighbors",    "Detailed peer info"),
-        ("show ip bgp",              "Full BGP table"),
-        ("show ip bgp <prefix>",     "Specific prefix detail"),
-        ("show ip bgp regexp <re>",  "Filter by AS-path regex"),
-        ("",                         ""),
+        ("show ip bgp summary", "BGP peer summary"),
+        ("show ip bgp neighbors", "Detailed peer info"),
+        ("show ip bgp", "Full BGP table"),
+        ("show ip bgp <prefix>", "Specific prefix detail"),
+        ("show ip bgp regexp <re>", "Filter by AS-path regex"),
+        ("", ""),
         ("clear ip bgp <peer> soft", "Soft reset peer"),
-        ("clear ip bgp <peer>",      "Hard reset peer"),
-        ("",                         ""),
-        ("router bgp <ASN>",         "Enter BGP config"),
-        ("neighbor <ip> remote-as",  "Add/change peer"),
-        ("neighbor <ip> shutdown",   "Shutdown peer"),
-        ("no neighbor <ip>",         "Remove peer"),
-        ("neighbor <ip> soft-reconfiguration inbound", "Enable soft-reset"),
+        ("clear ip bgp <peer>", "Hard reset peer"),
+        ("", ""),
+        ("router bgp <ASN>", "Enter BGP config"),
+        ("neighbor <ip> remote-as", "Add/change peer"),
+        ("neighbor <ip> shutdown", "Shutdown peer"),
+        ("no neighbor <ip>", "Remove peer"),
+        (
+            "neighbor <ip> soft-reconfiguration inbound",
+            "Enable soft-reset",
+        ),
         ("neighbor <ip> route-map <name> in/out", "Apply route-map"),
-        ("",                         ""),
-        ("show route-map",           "View all route-maps"),
-        ("show ip prefix-list",      "View prefix-lists"),
-        ("show ip community-list",   "Community lists"),
-        ("",                         ""),
-        ("",                         ""),
+        ("", ""),
+        ("show route-map", "View all route-maps"),
+        ("show ip prefix-list", "View prefix-lists"),
+        ("show ip community-list", "Community lists"),
+        ("", ""),
+        ("", ""),
         ("↑/↓  Navigate config lines", ""),
-        ("Select a route-map line",  "→ expands detail here"),
+        ("Select a route-map line", "→ expands detail here"),
     ];
 
     let key_style = Style::default().fg(Color::Yellow);
     let val_style = Style::default().fg(Color::DarkGray);
-    let hint_sty  = Style::default().fg(C_ESTABLISHED);
+    let hint_sty = Style::default().fg(C_ESTABLISHED);
 
     let lines: Vec<Line> = entries
         .iter()

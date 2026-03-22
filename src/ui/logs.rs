@@ -21,7 +21,10 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 Style::default().fg(Color::Red)
             } else if entry.contains("warn") || entry.contains("Warn") {
                 Style::default().fg(Color::Yellow)
-            } else if entry.contains("refresh") || entry.contains("Refresh") || entry.contains("started") {
+            } else if entry.contains("refresh")
+                || entry.contains("Refresh")
+                || entry.contains("started")
+            {
                 Style::default().fg(Color::Green)
             } else {
                 Style::default().fg(C_DIM)
@@ -39,11 +42,7 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
                 .border_style(Style::default().fg(C_BORDER))
                 .title(Span::styled(title, Style::default().fg(C_HEADER))),
         )
-        .highlight_style(
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     f.render_stateful_widget(list, area, &mut app.log_list_state);
