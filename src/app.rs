@@ -2661,7 +2661,9 @@ pub fn extract_routemap_name_from_line(line: &str) -> Option<String> {
 pub fn extract_prefixlist_name_from_line(line: &str) -> Option<String> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     let pos = parts.iter().position(|&p| p == "prefix-list")?;
-    parts.get(pos + 1).map(|s| s.to_string())
+    parts
+        .get(pos + 1)
+        .map(|s| s.trim_end_matches(':').to_string())
 }
 
 /// Truncate an error message to at most `max` chars for compact UI display.
@@ -3376,7 +3378,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     let parts: Vec<&str> = trimmed.split_whitespace().collect();
                     if let Some(pos) = parts.iter().position(|&p| p == "prefix-list") {
                         if let Some(name) = parts.get(pos + 1) {
-                            let name = name.to_string();
+                            let name = name.trim_end_matches(':').to_string();
                             app.open_prefixlist_editor(&name);
                         }
                     }
@@ -4150,8 +4152,8 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                                         .position(|e| e.seq == seq)
                                         .unwrap_or(0);
                                     app.pl_editor_editing = true;
-                                    app.pl_editor_field = 1;
-                                    app.pl_editor_buf = "permit".into();
+                                    app.pl_editor_field = 2;
+                                    app.pl_editor_buf.clear();
                                 }
                             } else {
                                 app.wizard_error =
@@ -4237,15 +4239,25 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                             if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
                                 entry.seq = new_seq;
                             }
-                        } else if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
-                            match app.pl_editor_field {
-                                1 => entry.action = app.pl_editor_buf.clone(),
-                                2 => entry.prefix = app.pl_editor_buf.clone(),
-                                _ => {}
+                            app.pl_editor_field = 1;
+                            if let Some(entry) = app.pl_editor_entries.get(app.pl_editor_selected) {
+                                app.pl_editor_buf = entry.action.clone();
                             }
+                        } else if app.pl_editor_field == 1 {
+                            if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
+                                entry.action = app.pl_editor_buf.clone();
+                            }
+                            app.pl_editor_field = 2;
+                            if let Some(entry) = app.pl_editor_entries.get(app.pl_editor_selected) {
+                                app.pl_editor_buf = entry.prefix.clone();
+                            }
+                        } else {
+                            if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
+                                entry.prefix = app.pl_editor_buf.clone();
+                            }
+                            app.pl_editor_editing = false;
+                            app.pl_editor_entries.sort_by_key(|e| e.seq);
                         }
-                        app.pl_editor_editing = false;
-                        app.pl_editor_entries.sort_by_key(|e| e.seq);
                     }
                     KeyCode::Char(' ') if app.pl_editor_field == 1 => {
                         app.pl_editor_buf = if app.pl_editor_buf == "permit" {
@@ -4277,8 +4289,13 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                     KeyCode::Enter => {
                         if let Some(entry) = app.pl_editor_entries.get(app.pl_editor_selected) {
                             app.pl_editor_editing = true;
-                            app.pl_editor_field = 0;
-                            app.pl_editor_buf = entry.seq.to_string();
+                            if entry.prefix.trim().is_empty() {
+                                app.pl_editor_field = 2;
+                                app.pl_editor_buf.clear();
+                            } else {
+                                app.pl_editor_field = 0;
+                                app.pl_editor_buf = entry.seq.to_string();
+                            }
                         }
                     }
                     KeyCode::Char('i') => {
@@ -4288,26 +4305,24 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                         app.wizard_error = None;
                     }
                     KeyCode::Char('a') => {
-                        let seq = app.pl_editor_entries.last().map(|e| e.seq + 5).unwrap_or(5);
-                        if app.pl_editor_entries.iter().any(|e| e.seq == seq) {
-                            let mut s = seq;
-                            while app.pl_editor_entries.iter().any(|e| e.seq == s) {
-                                s += 1;
-                            }
-                            app.pl_editor_entries.push(PrefixListEntry {
-                                seq: s,
-                                action: "permit".into(),
-                                prefix: String::new(),
-                            });
-                        } else {
-                            app.pl_editor_entries.push(PrefixListEntry {
-                                seq,
-                                action: "permit".into(),
-                                prefix: String::new(),
-                            });
+                        let mut seq = app.pl_editor_entries.last().map(|e| e.seq + 5).unwrap_or(5);
+                        while app.pl_editor_entries.iter().any(|e| e.seq == seq) {
+                            seq += 1;
                         }
+                        app.pl_editor_entries.push(PrefixListEntry {
+                            seq,
+                            action: "permit".into(),
+                            prefix: String::new(),
+                        });
                         app.pl_editor_entries.sort_by_key(|e| e.seq);
-                        app.pl_editor_selected = app.pl_editor_entries.len() - 1;
+                        app.pl_editor_selected = app
+                            .pl_editor_entries
+                            .iter()
+                            .position(|e| e.seq == seq)
+                            .unwrap_or(app.pl_editor_entries.len() - 1);
+                        app.pl_editor_editing = true;
+                        app.pl_editor_field = 2;
+                        app.pl_editor_buf.clear();
                     }
                     KeyCode::Char(' ') => {
                         if let Some(entry) =

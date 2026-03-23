@@ -367,26 +367,31 @@ impl CiscoBackend {
             .ssh_run_or_vtysh("show ip prefix-list", "prefix-list")
             .await
         {
-            // Build per-name raw blocks for structured parsing
             let mut name_blocks: Vec<(String, String)> = vec![];
             let mut seen_names = std::collections::HashSet::new();
             for line in raw.lines() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("ip prefix-list") {
-                    if let Some(name) = trimmed
+                    let name = trimmed
                         .strip_prefix("ip prefix-list ")
                         .and_then(|s| s.split_whitespace().next())
-                    {
-                        if seen_names.insert(name.to_string()) {
+                        .map(|n| n.trim_end_matches(':').to_string());
+                    if let Some(name) = name {
+                        if seen_names.insert(name.clone()) {
                             if !text.is_empty() {
                                 text.push_str("!\n");
                             }
-                            name_blocks.push((name.to_string(), String::new()));
+                            name_blocks.push((name, String::new()));
                         }
                     }
                     text.push(' ');
                     text.push_str(trimmed);
                     text.push('\n');
+                    if let Some((_, block)) = name_blocks.last_mut() {
+                        block.push_str(trimmed);
+                        block.push('\n');
+                    }
+                } else if trimmed.starts_with("seq ") || trimmed.contains(" seq ") {
                     if let Some((_, block)) = name_blocks.last_mut() {
                         block.push_str(trimmed);
                         block.push('\n');
