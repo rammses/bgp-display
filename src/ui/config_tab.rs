@@ -155,6 +155,18 @@ fn syntax_highlight(line: &str) -> Line<'static> {
             Style::default().fg(C_WARN).add_modifier(Modifier::BOLD),
         ));
     }
+    if s.contains("prefix-list") {
+        return Line::from(Span::styled(
+            s,
+            Style::default().fg(Color::LightGreen),
+        ));
+    }
+    if s.contains("community-list") {
+        return Line::from(Span::styled(
+            s,
+            Style::default().fg(Color::LightMagenta),
+        ));
+    }
     if s.contains("remote-as") {
         return Line::from(Span::styled(s, Style::default().fg(Color::LightBlue)));
     }

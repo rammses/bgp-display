@@ -343,6 +343,64 @@ impl CiscoBackend {
         lines.push("!".into());
         lines.join("\n")
     }
+
+    // ── fetch_policy_stanza ──────────────────────────────────────────────────
+    // Fetches prefix-lists and community-lists from the router and returns
+    // them as config-style lines to append to the rendered BGP stanza.
+
+    pub async fn fetch_policy_stanza(&self) -> String {
+        let mut out = String::new();
+
+        if let Ok(raw) = self
+            .ssh_run_or_vtysh("show ip prefix-list", "prefix-list")
+            .await
+        {
+            let mut seen_names = std::collections::HashSet::new();
+            for line in raw.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("ip prefix-list") {
+                    if let Some(name) = trimmed
+                        .strip_prefix("ip prefix-list ")
+                        .and_then(|s| s.split_whitespace().next())
+                    {
+                        if seen_names.insert(name.to_string()) && !out.is_empty() {
+                            out.push_str("!\n");
+                        }
+                    }
+                    out.push(' ');
+                    out.push_str(trimmed);
+                    out.push('\n');
+                }
+            }
+        }
+
+        if !out.is_empty() {
+            out.push_str("!\n");
+        }
+
+        if let Ok(raw) = self
+            .ssh_run_or_vtysh("show ip community-list", "community-list")
+            .await
+        {
+            for line in raw.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("ip community-list")
+                    || trimmed.starts_with("Named Community")
+                {
+                    continue;
+                }
+                if (trimmed.contains("permit") || trimmed.contains("deny"))
+                    && !trimmed.is_empty()
+                {
+                    out.push_str(" ip community-list ");
+                    out.push_str(trimmed);
+                    out.push('\n');
+                }
+            }
+        }
+
+        out
+    }
 }
 
 // ─── Neighbor detail (parsed from `show ip bgp neighbors <ip>`) ───────────────

@@ -3668,17 +3668,71 @@ fn handle_routemap_editor_key(app: &mut App, key: crossterm::event::KeyEvent) {
     match app.wizard_step {
         WizardStep::Fields => {
             if app.rm_editor_editing {
+                // field 100 = insert-seq prompt
+                if app.rm_editor_field == 100 {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.rm_editor_editing = false;
+                            app.wizard_error = None;
+                        }
+                        KeyCode::Enter => {
+                            if let Ok(seq) = app.rm_editor_buf.parse::<u32>() {
+                                if app.rm_editor_entries.iter().any(|e| e.sequence == seq) {
+                                    app.wizard_error =
+                                        Some(format!("Seq {seq} already exists"));
+                                } else {
+                                    app.wizard_error = None;
+                                    app.rm_editor_entries.push(RouteMapEntry {
+                                        sequence: seq,
+                                        action: "permit".into(),
+                                        ..Default::default()
+                                    });
+                                    app.rm_editor_entries.sort_by_key(|e| e.sequence);
+                                    app.rm_editor_selected = app
+                                        .rm_editor_entries
+                                        .iter()
+                                        .position(|e| e.sequence == seq)
+                                        .unwrap_or(0);
+                                    app.rm_editor_editing = true;
+                                    app.rm_editor_field = 1;
+                                    app.rm_editor_buf = "permit".into();
+                                }
+                            } else {
+                                app.wizard_error =
+                                    Some("Invalid sequence number".into());
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            app.rm_editor_buf.pop();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            app.rm_editor_buf.push(c);
+                        }
+                        _ => {}
+                    }
+                } else {
                 match key.code {
                     KeyCode::Esc => {
                         app.rm_editor_editing = false;
                     }
                     KeyCode::Tab => {
-                        if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
+                        if app.rm_editor_field == 0 {
+                            let cur_seq = app.rm_editor_entries.get(app.rm_editor_selected)
+                                .map(|e| e.sequence).unwrap_or(0);
+                            let new_seq: u32 = app.rm_editor_buf.parse().unwrap_or(cur_seq);
+                            if new_seq != cur_seq
+                                && app.rm_editor_entries.iter().enumerate()
+                                    .any(|(j, e)| j != app.rm_editor_selected && e.sequence == new_seq)
+                            {
+                                app.wizard_error = Some(format!("Seq {new_seq} already exists"));
+                                return;
+                            }
+                            app.wizard_error = None;
+                            if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
+                                entry.sequence = new_seq;
+                            }
+                        } else if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
                             match app.rm_editor_field {
-                                0 => {
-                                    entry.sequence =
-                                        app.rm_editor_buf.parse().unwrap_or(entry.sequence)
-                                }
                                 1 => entry.action = app.rm_editor_buf.clone(),
                                 2 => {
                                     entry.match_clauses =
@@ -3703,12 +3757,23 @@ fn handle_routemap_editor_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         }
                     }
                     KeyCode::Enter => {
-                        if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
+                        if app.rm_editor_field == 0 {
+                            let cur_seq = app.rm_editor_entries.get(app.rm_editor_selected)
+                                .map(|e| e.sequence).unwrap_or(0);
+                            let new_seq: u32 = app.rm_editor_buf.parse().unwrap_or(cur_seq);
+                            if new_seq != cur_seq
+                                && app.rm_editor_entries.iter().enumerate()
+                                    .any(|(j, e)| j != app.rm_editor_selected && e.sequence == new_seq)
+                            {
+                                app.wizard_error = Some(format!("Seq {new_seq} already exists"));
+                                return;
+                            }
+                            app.wizard_error = None;
+                            if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
+                                entry.sequence = new_seq;
+                            }
+                        } else if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
                             match app.rm_editor_field {
-                                0 => {
-                                    entry.sequence =
-                                        app.rm_editor_buf.parse().unwrap_or(entry.sequence)
-                                }
                                 1 => entry.action = app.rm_editor_buf.clone(),
                                 2 => {
                                     entry.match_clauses =
@@ -3722,6 +3787,7 @@ fn handle_routemap_editor_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             }
                         }
                         app.rm_editor_editing = false;
+                        app.rm_editor_entries.sort_by_key(|e| e.sequence);
                     }
                     KeyCode::Char(' ') if app.rm_editor_field == 1 => {
                         app.rm_editor_buf = if app.rm_editor_buf == "permit" {
@@ -3735,6 +3801,7 @@ fn handle_routemap_editor_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     }
                     KeyCode::Char(c) => app.rm_editor_buf.push(c),
                     _ => {}
+                }
                 }
             } else {
                 match key.code {
@@ -3756,18 +3823,48 @@ fn handle_routemap_editor_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             app.rm_editor_buf = entry.sequence.to_string();
                         }
                     }
+                    KeyCode::Char('i') => {
+                        app.rm_editor_editing = true;
+                        app.rm_editor_field = 100;
+                        app.rm_editor_buf.clear();
+                        app.wizard_error = None;
+                    }
                     KeyCode::Char('a') => {
                         let seq = app
                             .rm_editor_entries
                             .last()
                             .map(|e| e.sequence + 10)
                             .unwrap_or(10);
-                        app.rm_editor_entries.push(RouteMapEntry {
-                            sequence: seq,
-                            action: "permit".into(),
-                            ..Default::default()
-                        });
+                        if app.rm_editor_entries.iter().any(|e| e.sequence == seq) {
+                            let mut s = seq;
+                            while app.rm_editor_entries.iter().any(|e| e.sequence == s) {
+                                s += 1;
+                            }
+                            app.rm_editor_entries.push(RouteMapEntry {
+                                sequence: s,
+                                action: "permit".into(),
+                                ..Default::default()
+                            });
+                        } else {
+                            app.rm_editor_entries.push(RouteMapEntry {
+                                sequence: seq,
+                                action: "permit".into(),
+                                ..Default::default()
+                            });
+                        }
+                        app.rm_editor_entries.sort_by_key(|e| e.sequence);
                         app.rm_editor_selected = app.rm_editor_entries.len() - 1;
+                    }
+                    KeyCode::Char(' ') => {
+                        if let Some(entry) =
+                            app.rm_editor_entries.get_mut(app.rm_editor_selected)
+                        {
+                            entry.action = if entry.action == "permit" {
+                                "deny".into()
+                            } else {
+                                "permit".into()
+                            };
+                        }
                     }
                     KeyCode::Char('d') => {
                         if !app.rm_editor_entries.is_empty() {
@@ -3808,15 +3905,88 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
     match app.wizard_step {
         WizardStep::Fields => {
             if app.pl_editor_editing {
+                // field 100 = insert-seq prompt
+                if app.pl_editor_field == 100 {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.pl_editor_editing = false;
+                            app.wizard_error = None;
+                        }
+                        KeyCode::Enter => {
+                            if let Ok(seq) = app.pl_editor_buf.parse::<u32>() {
+                                if app.pl_editor_entries.iter().any(|e| e.seq == seq) {
+                                    app.wizard_error =
+                                        Some(format!("Seq {seq} already exists"));
+                                } else {
+                                    app.wizard_error = None;
+                                    app.pl_editor_entries.push(PrefixListEntry {
+                                        seq,
+                                        action: "permit".into(),
+                                        prefix: String::new(),
+                                    });
+                                    app.pl_editor_entries.sort_by_key(|e| e.seq);
+                                    app.pl_editor_selected = app
+                                        .pl_editor_entries
+                                        .iter()
+                                        .position(|e| e.seq == seq)
+                                        .unwrap_or(0);
+                                    app.pl_editor_editing = true;
+                                    app.pl_editor_field = 1;
+                                    app.pl_editor_buf = "permit".into();
+                                }
+                            } else {
+                                app.wizard_error =
+                                    Some("Invalid sequence number".into());
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            app.pl_editor_buf.pop();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            app.pl_editor_buf.push(c);
+                        }
+                        _ => {}
+                    }
+                } else if app.pl_editor_field == 99 {
                 match key.code {
                     KeyCode::Esc => {
                         app.pl_editor_editing = false;
                     }
-                    KeyCode::Tab if app.pl_editor_field == 99 => {}
+                    KeyCode::Enter => {
+                        if !app.pl_editor_buf.is_empty() {
+                            app.pl_editor_name = app.pl_editor_buf.clone();
+                        }
+                        app.pl_editor_editing = false;
+                    }
+                    KeyCode::Backspace => {
+                        app.pl_editor_buf.pop();
+                    }
+                    KeyCode::Char(c) => app.pl_editor_buf.push(c),
+                    _ => {}
+                }
+                } else {
+                match key.code {
+                    KeyCode::Esc => {
+                        app.pl_editor_editing = false;
+                    }
                     KeyCode::Tab => {
-                        if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
+                        if app.pl_editor_field == 0 {
+                            let cur_seq = app.pl_editor_entries.get(app.pl_editor_selected)
+                                .map(|e| e.seq).unwrap_or(0);
+                            let new_seq: u32 = app.pl_editor_buf.parse().unwrap_or(cur_seq);
+                            if new_seq != cur_seq
+                                && app.pl_editor_entries.iter().enumerate()
+                                    .any(|(j, e)| j != app.pl_editor_selected && e.seq == new_seq)
+                            {
+                                app.wizard_error = Some(format!("Seq {new_seq} already exists"));
+                                return;
+                            }
+                            app.wizard_error = None;
+                            if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
+                                entry.seq = new_seq;
+                            }
+                        } else if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
                             match app.pl_editor_field {
-                                0 => entry.seq = app.pl_editor_buf.parse().unwrap_or(entry.seq),
                                 1 => entry.action = app.pl_editor_buf.clone(),
                                 2 => entry.prefix = app.pl_editor_buf.clone(),
                                 _ => {}
@@ -3832,22 +4002,31 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                             };
                         }
                     }
-                    KeyCode::Enter if app.pl_editor_field == 99 => {
-                        if !app.pl_editor_buf.is_empty() {
-                            app.pl_editor_name = app.pl_editor_buf.clone();
-                        }
-                        app.pl_editor_editing = false;
-                    }
                     KeyCode::Enter => {
-                        if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
+                        if app.pl_editor_field == 0 {
+                            let cur_seq = app.pl_editor_entries.get(app.pl_editor_selected)
+                                .map(|e| e.seq).unwrap_or(0);
+                            let new_seq: u32 = app.pl_editor_buf.parse().unwrap_or(cur_seq);
+                            if new_seq != cur_seq
+                                && app.pl_editor_entries.iter().enumerate()
+                                    .any(|(j, e)| j != app.pl_editor_selected && e.seq == new_seq)
+                            {
+                                app.wizard_error = Some(format!("Seq {new_seq} already exists"));
+                                return;
+                            }
+                            app.wizard_error = None;
+                            if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
+                                entry.seq = new_seq;
+                            }
+                        } else if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
                             match app.pl_editor_field {
-                                0 => entry.seq = app.pl_editor_buf.parse().unwrap_or(entry.seq),
                                 1 => entry.action = app.pl_editor_buf.clone(),
                                 2 => entry.prefix = app.pl_editor_buf.clone(),
                                 _ => {}
                             }
                         }
                         app.pl_editor_editing = false;
+                        app.pl_editor_entries.sort_by_key(|e| e.seq);
                     }
                     KeyCode::Char(' ') if app.pl_editor_field == 1 => {
                         app.pl_editor_buf = if app.pl_editor_buf == "permit" {
@@ -3861,6 +4040,7 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                     }
                     KeyCode::Char(c) => app.pl_editor_buf.push(c),
                     _ => {}
+                }
                 }
             } else {
                 match key.code {
@@ -3882,14 +4062,44 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                             app.pl_editor_buf = entry.seq.to_string();
                         }
                     }
+                    KeyCode::Char('i') => {
+                        app.pl_editor_editing = true;
+                        app.pl_editor_field = 100;
+                        app.pl_editor_buf.clear();
+                        app.wizard_error = None;
+                    }
                     KeyCode::Char('a') => {
                         let seq = app.pl_editor_entries.last().map(|e| e.seq + 5).unwrap_or(5);
-                        app.pl_editor_entries.push(PrefixListEntry {
-                            seq,
-                            action: "permit".into(),
-                            prefix: String::new(),
-                        });
+                        if app.pl_editor_entries.iter().any(|e| e.seq == seq) {
+                            let mut s = seq;
+                            while app.pl_editor_entries.iter().any(|e| e.seq == s) {
+                                s += 1;
+                            }
+                            app.pl_editor_entries.push(PrefixListEntry {
+                                seq: s,
+                                action: "permit".into(),
+                                prefix: String::new(),
+                            });
+                        } else {
+                            app.pl_editor_entries.push(PrefixListEntry {
+                                seq,
+                                action: "permit".into(),
+                                prefix: String::new(),
+                            });
+                        }
+                        app.pl_editor_entries.sort_by_key(|e| e.seq);
                         app.pl_editor_selected = app.pl_editor_entries.len() - 1;
+                    }
+                    KeyCode::Char(' ') => {
+                        if let Some(entry) =
+                            app.pl_editor_entries.get_mut(app.pl_editor_selected)
+                        {
+                            entry.action = if entry.action == "permit" {
+                                "deny".into()
+                            } else {
+                                "permit".into()
+                            };
+                        }
                     }
                     KeyCode::Char('d') => {
                         if !app.pl_editor_entries.is_empty() {
@@ -3935,14 +4145,71 @@ fn handle_communitylist_editor_key(app: &mut App, key: crossterm::event::KeyEven
     match app.wizard_step {
         WizardStep::Fields => {
             if app.cl_editor_editing {
+                // field 100 = insert-seq prompt
+                if app.cl_editor_field == 100 {
+                    match key.code {
+                        KeyCode::Esc => {
+                            app.cl_editor_editing = false;
+                            app.wizard_error = None;
+                        }
+                        KeyCode::Enter => {
+                            if let Ok(seq) = app.cl_editor_buf.parse::<u32>() {
+                                if app.cl_editor_entries.iter().any(|e| e.seq == seq) {
+                                    app.wizard_error =
+                                        Some(format!("Seq {seq} already exists"));
+                                } else {
+                                    app.wizard_error = None;
+                                    app.cl_editor_entries.push(CommunityListEntry {
+                                        seq,
+                                        action: "permit".into(),
+                                        community: String::new(),
+                                    });
+                                    app.cl_editor_entries.sort_by_key(|e| e.seq);
+                                    app.cl_editor_selected = app
+                                        .cl_editor_entries
+                                        .iter()
+                                        .position(|e| e.seq == seq)
+                                        .unwrap_or(0);
+                                    app.cl_editor_editing = true;
+                                    app.cl_editor_field = 1;
+                                    app.cl_editor_buf = "permit".into();
+                                }
+                            } else {
+                                app.wizard_error =
+                                    Some("Invalid sequence number".into());
+                            }
+                        }
+                        KeyCode::Backspace => {
+                            app.cl_editor_buf.pop();
+                        }
+                        KeyCode::Char(c) if c.is_ascii_digit() => {
+                            app.cl_editor_buf.push(c);
+                        }
+                        _ => {}
+                    }
+                } else {
                 match key.code {
                     KeyCode::Esc => {
                         app.cl_editor_editing = false;
                     }
                     KeyCode::Tab => {
-                        if let Some(entry) = app.cl_editor_entries.get_mut(app.cl_editor_selected) {
+                        if app.cl_editor_field == 0 {
+                            let cur_seq = app.cl_editor_entries.get(app.cl_editor_selected)
+                                .map(|e| e.seq).unwrap_or(0);
+                            let new_seq: u32 = app.cl_editor_buf.parse().unwrap_or(cur_seq);
+                            if new_seq != cur_seq
+                                && app.cl_editor_entries.iter().enumerate()
+                                    .any(|(j, e)| j != app.cl_editor_selected && e.seq == new_seq)
+                            {
+                                app.wizard_error = Some(format!("Seq {new_seq} already exists"));
+                                return;
+                            }
+                            app.wizard_error = None;
+                            if let Some(entry) = app.cl_editor_entries.get_mut(app.cl_editor_selected) {
+                                entry.seq = new_seq;
+                            }
+                        } else if let Some(entry) = app.cl_editor_entries.get_mut(app.cl_editor_selected) {
                             match app.cl_editor_field {
-                                0 => entry.seq = app.cl_editor_buf.parse().unwrap_or(entry.seq),
                                 1 => entry.action = app.cl_editor_buf.clone(),
                                 2 => entry.community = app.cl_editor_buf.clone(),
                                 _ => {}
@@ -3959,15 +4226,30 @@ fn handle_communitylist_editor_key(app: &mut App, key: crossterm::event::KeyEven
                         }
                     }
                     KeyCode::Enter => {
-                        if let Some(entry) = app.cl_editor_entries.get_mut(app.cl_editor_selected) {
+                        if app.cl_editor_field == 0 {
+                            let cur_seq = app.cl_editor_entries.get(app.cl_editor_selected)
+                                .map(|e| e.seq).unwrap_or(0);
+                            let new_seq: u32 = app.cl_editor_buf.parse().unwrap_or(cur_seq);
+                            if new_seq != cur_seq
+                                && app.cl_editor_entries.iter().enumerate()
+                                    .any(|(j, e)| j != app.cl_editor_selected && e.seq == new_seq)
+                            {
+                                app.wizard_error = Some(format!("Seq {new_seq} already exists"));
+                                return;
+                            }
+                            app.wizard_error = None;
+                            if let Some(entry) = app.cl_editor_entries.get_mut(app.cl_editor_selected) {
+                                entry.seq = new_seq;
+                            }
+                        } else if let Some(entry) = app.cl_editor_entries.get_mut(app.cl_editor_selected) {
                             match app.cl_editor_field {
-                                0 => entry.seq = app.cl_editor_buf.parse().unwrap_or(entry.seq),
                                 1 => entry.action = app.cl_editor_buf.clone(),
                                 2 => entry.community = app.cl_editor_buf.clone(),
                                 _ => {}
                             }
                         }
                         app.cl_editor_editing = false;
+                        app.cl_editor_entries.sort_by_key(|e| e.seq);
                     }
                     KeyCode::Char(' ') if app.cl_editor_field == 1 => {
                         app.cl_editor_buf = if app.cl_editor_buf == "permit" {
@@ -3981,6 +4263,7 @@ fn handle_communitylist_editor_key(app: &mut App, key: crossterm::event::KeyEven
                     }
                     KeyCode::Char(c) => app.cl_editor_buf.push(c),
                     _ => {}
+                }
                 }
             } else {
                 match key.code {
@@ -4002,14 +4285,44 @@ fn handle_communitylist_editor_key(app: &mut App, key: crossterm::event::KeyEven
                             app.cl_editor_buf = entry.seq.to_string();
                         }
                     }
+                    KeyCode::Char('i') => {
+                        app.cl_editor_editing = true;
+                        app.cl_editor_field = 100;
+                        app.cl_editor_buf.clear();
+                        app.wizard_error = None;
+                    }
                     KeyCode::Char('a') => {
                         let seq = app.cl_editor_entries.last().map(|e| e.seq + 5).unwrap_or(5);
-                        app.cl_editor_entries.push(CommunityListEntry {
-                            seq,
-                            action: "permit".into(),
-                            community: String::new(),
-                        });
+                        if app.cl_editor_entries.iter().any(|e| e.seq == seq) {
+                            let mut s = seq;
+                            while app.cl_editor_entries.iter().any(|e| e.seq == s) {
+                                s += 1;
+                            }
+                            app.cl_editor_entries.push(CommunityListEntry {
+                                seq: s,
+                                action: "permit".into(),
+                                community: String::new(),
+                            });
+                        } else {
+                            app.cl_editor_entries.push(CommunityListEntry {
+                                seq,
+                                action: "permit".into(),
+                                community: String::new(),
+                            });
+                        }
+                        app.cl_editor_entries.sort_by_key(|e| e.seq);
                         app.cl_editor_selected = app.cl_editor_entries.len() - 1;
+                    }
+                    KeyCode::Char(' ') => {
+                        if let Some(entry) =
+                            app.cl_editor_entries.get_mut(app.cl_editor_selected)
+                        {
+                            entry.action = if entry.action == "permit" {
+                                "deny".into()
+                            } else {
+                                "permit".into()
+                            };
+                        }
                     }
                     KeyCode::Char('d') => {
                         if !app.cl_editor_entries.is_empty() {

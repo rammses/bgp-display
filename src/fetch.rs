@@ -189,7 +189,22 @@ async fn refresh_router(
                     elapsed_ms, "router refresh OK"
                 );
             }
-            let rendered = CiscoBackend::render_bgp_stanza(&summary);
+            let mut rendered = CiscoBackend::render_bgp_stanza(&summary);
+
+            // Fetch prefix-list and community-list definitions so they appear
+            // on the Config tab and can be edited with 'e'.
+            match cfg.vendor {
+                RouterVendor::Cisco | RouterVendor::VyOs => {
+                    let b = CiscoBackend::new(&cfg, Arc::clone(ssh));
+                    let policy = b.fetch_policy_stanza().await;
+                    if !policy.is_empty() {
+                        rendered.push('\n');
+                        rendered.push_str(&policy);
+                    }
+                }
+                _ => {}
+            }
+
             let _ = tx.send(AppEvent::RouteData(id, routes));
             let _ = tx.send(AppEvent::BgpData(id, Box::new(summary), rendered));
         }
