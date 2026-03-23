@@ -64,7 +64,9 @@ pub fn draw(f: &mut Frame, app: &App) {
             lines.push(key_line("/", "Filter"));
         }
         ActiveTab::Config => {
-            lines.push(key_line("e", "Edit RM/PL"));
+            lines.push(key_line("e", "Edit RM/PL/CL on cursor"));
+            lines.push(key_line("P", "New prefix-list"));
+            lines.push(key_line("C", "New community-list"));
             lines.push(key_line("h", "History"));
             lines.push(key_line("/", "Filter"));
         }

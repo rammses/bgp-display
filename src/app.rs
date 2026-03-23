@@ -3293,7 +3293,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             app.start_clone_peer();
         }
 
-        // ── Route-map / Prefix-list editors (Config tab) ────────────────────
+        // ── Route-map / Prefix-list / Community-list editors (Config tab) ──
         KeyCode::Char('e') if app.current_tab == ActiveTab::Config => {
             if let Some(line) = app
                 .config_list_state
@@ -3328,6 +3328,16 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     }
                 }
             }
+        }
+
+        // ── Direct prefix-list editor (Config tab, creates new if needed) ──
+        KeyCode::Char('P') if app.current_tab == ActiveTab::Config => {
+            app.open_prefixlist_editor("NEW-PREFIX-LIST");
+        }
+
+        // ── Direct community-list editor (Config tab, creates new if needed)
+        KeyCode::Char('C') if app.current_tab == ActiveTab::Config => {
+            app.open_communitylist_editor("NEW-COMMUNITY-LIST");
         }
 
         _ => {}
@@ -3802,6 +3812,7 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                     KeyCode::Esc => {
                         app.pl_editor_editing = false;
                     }
+                    KeyCode::Tab if app.pl_editor_field == 99 => {}
                     KeyCode::Tab => {
                         if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
                             match app.pl_editor_field {
@@ -3820,6 +3831,12 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                                 _ => String::new(),
                             };
                         }
+                    }
+                    KeyCode::Enter if app.pl_editor_field == 99 => {
+                        if !app.pl_editor_buf.is_empty() {
+                            app.pl_editor_name = app.pl_editor_buf.clone();
+                        }
+                        app.pl_editor_editing = false;
                     }
                     KeyCode::Enter => {
                         if let Some(entry) = app.pl_editor_entries.get_mut(app.pl_editor_selected) {
@@ -3884,6 +3901,11 @@ fn handle_prefixlist_editor_key(app: &mut App, key: crossterm::event::KeyEvent) 
                                     app.pl_editor_entries.len().saturating_sub(1);
                             }
                         }
+                    }
+                    KeyCode::Char('N') => {
+                        app.pl_editor_editing = true;
+                        app.pl_editor_field = 99;
+                        app.pl_editor_buf = app.pl_editor_name.clone();
                     }
                     KeyCode::Char('s') => {
                         app.pl_editor_generate_preview();
