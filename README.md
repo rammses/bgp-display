@@ -1,284 +1,188 @@
-# bgp-link display
+# bgp-link-manager
 
-> A terminal UI (TUI) for monitoring and managing BGP sessions on production routers — live over SSH, encrypted credentials, real-time state — all inside your terminal.
+> A terminal UI (TUI) for monitoring and managing BGP sessions across multi-vendor routers — live over SSH, encrypted credentials, real-time state — all inside your terminal.
 
 ![Dashboard](res/dashboard.png)
 
 ---
 
-## Goal
-
-Network engineers spend a lot of time SSHing into routers, running `show ip bgp summary`, grepping through neighbour tables and cross-referencing route-maps with prefix-lists by hand.  
-**bgp-link display** puts all of that in one place:
+## Features
 
 - Live BGP peer state for every router on a single screen
-- Navigate the full BGP RIB without leaving the TUI
-- Inspect route-maps with their prefix-list and community-list entries expanded inline — no more tabbing between `show route-map` and `show ip prefix-list`
-- Add / edit / remove routers from inside the app; credentials are stored AES-256-GCM encrypted on disk
-- Connectivity log tracks every TCP reachability change over time
+- Neighbor wizard — create, edit, delete BGP neighbors with vendor-specific CLI generation
+- Route-map, prefix-list, and community-list editors
+- Full BGP RIB navigation without leaving the TUI
+- Config history with rollback support
+- Peer state alerting and transition timeline
+- Ping monitor with RTT, packet loss, and sparkline
+- Per-tab search/filter across all views
+- Encrypted credential storage (AES-256-GCM, Argon2id key derivation)
+- SSH via system OpenSSH with ControlMaster multiplexing
 
-**Supported routers:** Cisco IOS / IOS-XE · VyOS 1.5 (Circinus / FRRouting)  
-**Planned:** Juniper JunOS, FortiGate FortiOS
+**Supported routers:** Cisco IOS / IOS-XE · VyOS 1.5 (FRRouting) · Citrix VPX · pfSense · FortiGate (with VDOM)
 
 ---
 
 ## Install
 
-### Prerequisites
+### Homebrew (macOS & Linux)
 
-| Requirement | Notes |
-|-------------|-------|
-| Rust 1.75 + | `curl https://sh.rustup.rs -sSf \| sh` |
-| OpenSSH client | must be on `$PATH` — standard on macOS & Linux |
-| A terminal that supports 256 colours | iTerm2, kitty, Alacritty, GNOME Terminal … |
+```bash
+brew install rammses/tap/bgp-link-manager
+```
+
+### Download binary
+
+Pre-built binaries for macOS (ARM + Intel), Linux (ARM + x64), and Windows x64 are available on the [Releases](https://github.com/rammses/bgp-display/releases) page.
 
 ### Build from source
 
+**Prerequisites:** Rust 1.75+, OpenSSH client on `$PATH`, a 256-colour terminal.
+
 ```bash
-git clone https://github.com/yourname/bgp-link display
-cd bgp-link display
+git clone https://github.com/rammses/bgp-display.git
+cd bgp-display
 cargo build --release
-# binary lands at target/release/bgp-link display
-```
-
-Copy to somewhere on your `$PATH`:
-
-```bash
-sudo cp target/release/bgp-link display /usr/local/bin/bgp-lm
+# binary: target/release/bgp-link-manager
 ```
 
 ---
 
-## First Use
+## First launch
 
 ```bash
-bgp-lm          # or: cargo run
+bgp-link-manager
 ```
 
-On first launch you are prompted for an **encryption passphrase**.  
-This passphrase protects the router credential database stored at:
+You will be prompted for an **encryption passphrase**. This protects the router credential database:
 
 ```
-~/Library/Application Support/bgp-link display/routers.db   # macOS
-~/.local/share/bgp-link display/routers.db                   # Linux
+~/Library/Application Support/bgp-link-manager/routers.db   # macOS
+~/.local/share/bgp-link-manager/routers.db                   # Linux
 ```
 
-> Passwords are encrypted with AES-256-GCM, key derived with Argon2id.  
-> The passphrase is never stored — you must enter it each time you launch the app.
+> The passphrase is never stored — enter it each time you launch.
 
-After unlocking, press **`6`** to open the **Routers** tab and add your first router:
-
-![Routers tab](res/routers.png)
-
-Fill in hostname, SSH port, username, password, local AS number, and **vendor** (Cisco or VyOs).  
-The router is saved immediately to the encrypted database.
-
-> **Vendor field:** press `Space` while the Vendor row is active to toggle between `Cisco` and `VyOs`.
+After unlocking, press **`6`** to open the **Routers** tab and add your first router. See [HELP.md](HELP.md) for a full walkthrough of every tab and shortcut.
 
 ---
 
-## Operate
-
-Use number keys `1`–`7` to jump between tabs, or `Tab` / `Shift-Tab` to cycle.
-
-### 1 · Dashboard
-
-![Dashboard](res/dashboard.png)
-
-- Left column: router list with live TCP ping indicator (● green = reachable, ● red = unreachable)
-- Right panel: BGP summary for the selected router — peer count, total prefixes, uptime
-
-### 2 · Peers
-
-![Peers](res/peers.png)
-
-BGP neighbour table with:
-
-| Column | Description |
-|--------|-------------|
-| Neighbor | Peer IP address |
-| AS | Remote ASN |
-| State | Established / Active / Idle … (colour-coded) |
-| Uptime | Session uptime |
-| Pfx Rcvd | Prefixes received |
-| RM-In / RM-Out | Applied inbound / outbound route-maps |
-
-Select a row and press `Enter` for the per-peer detail pane.
-
-### 3 · Routes
-
-![Routes](res/routes.png)
-
-Full BGP RIB — network, next-hop, local-pref, MED, weight, AS-path, origin, communities.  
-`↑` / `↓` to navigate rows; `r` to refresh.
-
-### 4 · Config
-
-![Config](res/config.png)
-
-Left panel shows the live BGP configuration as a navigable menu.  
-Navigate with `↑` / `↓`. When the cursor lands on a **route-map** line the right panel expands it inline — every `seq` entry, its `match` prefix-lists and community-lists with individual rows, and all `set` clauses — no extra SSH commands needed.
-
-### 5 · Logs
-
-![Logs](res/logs.png)
-
-In-memory event log: SSH errors, parser warnings, config pushes.
-
-### 6 · Routers
-
-![Routers](res/routers.png)
-
-Add, edit and delete routers. Each router has a **Vendor** field — press `Space` on that row to toggle between `Cisco` (IOS / IOS-XE) and `VyOs` (VyOS 1.5 / FRRouting). Changes persist immediately to the encrypted database.
-
-| Vendor | SSH target | BGP commands |
-|--------|-----------|---------------|
-| `Cisco` | IOS / IOS-XE shell | `show ip bgp summary`, `show ip bgp neighbors …` |
-| `VyOs`  | VyOS restricted shell → `vtysh` | `show bgp ipv4 unicast summary`, `show bgp neighbors …` |
-
-### 7 · Connectivity Log
-
-![Connectivity log](res/activitylog.png)
-
-Timestamped history of every TCP reachability change for every router.
-
-### Diagnostics & Logging
-
-All diagnostic output is written to a **file log** (never to the terminal), located at:
-
-```
-~/.local/share/bgp-link-manager/logs/bgp-link-manager.log   # daily rotation
-```
-
-The log path is also shown in the BGP Log tab on startup.
-
-Control verbosity with the `BGP_LM_LOG` environment variable:
-
-```bash
-# Default (info) — SSH warm-up, router refreshes, health checks
-cargo run
-
-# Debug — every SSH command, fetch request, event routing
-BGP_LM_LOG=debug cargo run
-
-# Trace — per-frame draw timing, per-event handler timing
-BGP_LM_LOG=trace cargo run
-```
-
-**Lag detection** is built in. The log automatically emits warnings when:
-
-| Metric | Threshold | Log level |
-|--------|-----------|-----------|
-| UI draw time | > 16 ms (60 fps budget) | WARN |
-| Event handler time | > 5 ms | WARN |
-| SSH command time | > 10 s | WARN |
-| Data fetch time | > 15 s | WARN |
-
-To watch logs in real time while the app is running:
-
-```bash
-tail -f ~/.local/share/bgp-link-manager/logs/bgp-link-manager.log*
-```
-
-### Key bindings
+## Quick reference
 
 | Key | Action |
 |-----|--------|
 | `q` / `Ctrl-C` | Quit |
 | `Tab` / `Shift-Tab` | Next / previous tab |
-| `1` – `7` | Jump directly to tab |
-| `↑` / `k`, `↓` / `j` | Navigate rows |
-| `r` / `F5` | Refresh selected router |
-| `a` | Add router (Routers tab) |
-| `e` | Edit selected router (Routers tab) |
-| `d` | Delete selected router (Routers tab) |
-| `Enter` | Confirm / open detail |
-| `Esc` | Cancel / close detail |
-| `Space` | Cycle Vendor field (Routers tab, Vendor row) |
+| `1`–`7` | Jump to tab |
+| `↑`/`↓` or `j`/`k` | Navigate |
+| `r` / `F5` | Refresh |
+| `p` | Projects popup |
+| `?` | Keyboard shortcut help overlay |
+| `/` | Filter (Peers, Routes, Config, Logs, SSH Log) |
 
 ---
 
-## Contribute
+## Tabs
 
-Contributions are welcome — bug fixes, new vendor backends, parser improvements, UI polish.
+| # | Tab | Purpose |
+|---|-----|---------|
+| 1 | Dashboard | Router list + BGP summary + peer state sparkline |
+| 2 | Peers | Neighbor table, per-peer routes, MTU probe |
+| 3 | Routes | Full BGP RIB |
+| 4 | Config | Live config, route-map detail, policy editors |
+| 5 | BGP Log | Application event log |
+| 6 | Routers | Add / edit / delete routers |
+| 7 | SSH Log | Connectivity events + ping monitor |
+
+---
+
+## Vendor support
+
+| Vendor | SSH method | Status |
+|--------|-----------|--------|
+| Cisco IOS / IOS-XE | Direct shell | Full |
+| VyOS 1.5 (FRRouting) | `vtysh` wrapper | Full |
+| Citrix VPX | Shell pipe | Full |
+| pfSense | Piped stdin | Full |
+| FortiGate | Piped stdin + VDOM | Full |
+
+---
+
+## Diagnostics
+
+Logs are written to a daily-rotating file (never to the terminal):
+
+```
+~/Library/Application Support/bgp-link-manager/logs/   # macOS
+~/.local/share/bgp-link-manager/logs/                    # Linux
+```
+
+Control verbosity with `BGP_LM_LOG`:
 
 ```bash
-# Fork & clone
-git clone https://github.com/yourname/bgp-link display
-cd bgp-link display
-
-# Create a feature branch
-git checkout -b feature/juniper-backend
-
-# Build + check
-cargo build
-cargo clippy -- -D warnings
-
-# Run
-cargo run
+BGP_LM_LOG=debug bgp-link-manager   # SSH commands, fetch requests
+BGP_LM_LOG=trace bgp-link-manager   # per-frame draw timing
 ```
 
-### Adding a new vendor backend
+---
 
-Follow the same pattern as `src/router/vyos.rs` (VyOS) or `src/router/cisco.rs`:
-
-1. Create `src/router/<vendor>.rs` with a backend struct implementing:
-
-```rust
-pub async fn connect(&mut self)    -> Result<()>
-pub async fn disconnect(&mut self) -> Result<()>
-pub async fn refresh(&mut self)    -> Result<BgpSummary>
-pub async fn get_routes(&mut self) -> Result<Vec<BgpRoute>>
-pub async fn fetch_route_map_detail(&self, name: &str) -> Result<RouteMapDetail>
-pub async fn apply_config(&mut self, config: &str) -> Result<()>
-```
-
-2. Add `pub mod <vendor>;` and a `RouterBackend::<Vendor>(…)` variant in `src/router/mod.rs`, with dispatch arms for every method.
-3. Add a `RouterVendor::<Vendor>` variant in the same file and handle it in `Display`.
-4. Handle `"<vendor>"` in `db.rs` `load_all()` and in `app.rs` `spawn_bgp_fetch_for` / `spawn_routemap_fetch`.
-5. Handle field index 5 (Vendor) in `apply_buf_to_draft` in `app.rs`.
-
-### Project layout
+## Project layout
 
 ```
 src/
-├── main.rs            Entry point + passphrase prompt
-├── tui.rs             Terminal setup / event loop
-├── events.rs          AppEvent enum
-├── app.rs             Application state + key handler
-├── config.rs          Config loading (uses RouterDb)
-├── db.rs              AES-256-GCM encrypted SQLite credential store
+├── main.rs              Entry point + passphrase prompt
+├── tui.rs               Terminal setup / event loop
+├── events.rs            AppEvent + FetchRequest enums
+├── app.rs               Application state + key handler
+├── config.rs            Config loading
+├── db.rs                Encrypted SQLite (AES-256-GCM)
+├── ssh.rs               SshSessionManager (ControlMaster pool)
+├── fetch.rs             Background data fetch service
+├── export.rs            JSON export/import
 ├── bgp/
-│   └── mod.rs         BGP types + FRR/Cisco output parsers
+│   ├── mod.rs           BGP types + parsers
+│   └── naming.rs        Policy naming conventions
 ├── router/
-│   ├── mod.rs         RouterBackend enum + RouterVendor dispatch
-│   ├── cisco.rs       Cisco IOS / IOS-XE SSH backend
-│   └── vyos.rs        VyOS 1.5 SSH backend (vtysh wrapper)
+│   ├── mod.rs           RouterBackend enum dispatch
+│   ├── cisco.rs         Cisco IOS/IOS-XE
+│   ├── vyos.rs          VyOS (FRRouting)
+│   ├── citrix.rs        Citrix VPX
+│   ├── pfsense.rs       pfSense
+│   ├── fortigate.rs     FortiGate (VDOM)
+│   └── commands.rs      Vendor-specific CLI generation
 └── ui/
-    ├── mod.rs          Layout, tab bar, colour palette
-    ├── dashboard.rs    Tab 1
-    ├── peers.rs        Tab 2
-    ├── routes.rs       Tab 3
-    ├── config_tab.rs   Tab 4 — navigable config + route-map detail
-    ├── logs.rs         Tab 5
-    ├── router_editor.rs Tab 6
-    └── conn_log.rs     Tab 7
+    ├── mod.rs            Layout, colour palette, overlays
+    ├── dashboard.rs      Tab 1
+    ├── peers.rs          Tab 2
+    ├── routes.rs         Tab 3
+    ├── config_tab.rs     Tab 4
+    ├── logs.rs           Tab 5
+    ├── router_editor.rs  Tab 6
+    ├── conn_log.rs       Tab 7 + ping monitor
+    ├── neighbor_wizard.rs
+    ├── routemap_editor.rs
+    ├── prefixlist_editor.rs
+    ├── communitylist_editor.rs
+    ├── project_popup.rs
+    └── help_overlay.rs
 ```
-
-Please open a GitHub issue before starting large refactors so we can align on direction.
 
 ---
 
-## Buy me a coffee
+## Contributing
 
-If this tool saves you time on your network shifts, a small tip is always appreciated ☕
+Contributions welcome — bug fixes, new vendor backends, parser improvements.
 
-**Payoneer:** [payoneer.com/pay](https://www.payoneer.com/pay)  
-mesutbayrak at gmail dot com
+```bash
+git clone https://github.com/rammses/bgp-display.git
+cd bgp-display
+cargo build && cargo clippy -- -D warnings
+```
+
+See [AGENTS.md](AGENTS.md) for architecture details and the vendor backend guide.
 
 ---
 
 ## License
 
 MIT
-
