@@ -191,7 +191,9 @@ fn syntax_highlight(line: &str) -> Line<'static> {
 // ─── Right panel (dynamic) ────────────────────────────────────────────────────
 
 fn draw_right_panel(f: &mut Frame, app: &App, area: Rect) {
-    if let Some(rm) = &app.config_routemap {
+    if let Some(pl_name) = &app.config_pl_name {
+        draw_prefixlist_detail(f, app, pl_name, area);
+    } else if let Some(rm) = &app.config_routemap {
         draw_routemap_detail(f, rm, area, app.routemap_detail_scroll);
     } else if let Some(name) = &app.config_rm_name {
         draw_loading_panel(f, name, area);
@@ -351,6 +353,70 @@ fn draw_routemap_detail(f: &mut Frame, rm: &RouteMapDetail, area: Rect, scroll: 
         )
         .wrap(Wrap { trim: false })
         .scroll((scroll, 0));
+    f.render_widget(para, area);
+}
+
+// ─── Prefix-list detail ──────────────────────────────────────────────────────
+
+fn draw_prefixlist_detail(f: &mut Frame, app: &App, pl_name: &str, area: Rect) {
+    let permit_sty = Style::default()
+        .fg(C_ESTABLISHED)
+        .add_modifier(Modifier::BOLD);
+    let deny_sty = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+    let dim = Style::default().fg(C_DIM);
+    let seq_sty = Style::default().fg(Color::DarkGray);
+
+    let mut lines: Vec<Line> = vec![
+        Line::from(Span::styled(
+            format!("  ip prefix-list {pl_name}"),
+            Style::default()
+                .fg(Color::LightGreen)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::raw("")),
+    ];
+
+    let rid = app.selected_router().map(|r| r.id);
+    let entries = rid.and_then(|id| app.prefix_list_cache.get(&(id, pl_name.to_string())));
+
+    match entries {
+        Some(pl) if !pl.is_empty() => {
+            for pe in pl {
+                let action_sty = if pe.action == "permit" {
+                    permit_sty
+                } else {
+                    deny_sty
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(format!("  seq {:>4}  ", pe.seq), seq_sty),
+                    Span::styled(format!("{:<7}", pe.action), action_sty),
+                    Span::styled(pe.prefix.clone(), Style::default().fg(Color::White)),
+                ]));
+            }
+        }
+        _ => {
+            lines.push(Line::from(Span::styled("  (no entries cached — press e to edit)", dim)));
+        }
+    }
+
+    lines.push(Line::from(Span::raw("")));
+    lines.push(Line::from(Span::styled(
+        "  e:edit  Esc:back",
+        Style::default().fg(C_DIM),
+    )));
+
+    let title = format!(" Prefix-list: {pl_name} ");
+    let para = Paragraph::new(lines)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(C_BORDER))
+                .title(Span::styled(
+                    title,
+                    Style::default().fg(Color::LightGreen),
+                )),
+        )
+        .wrap(Wrap { trim: false });
     f.render_widget(para, area);
 }
 

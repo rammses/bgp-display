@@ -299,6 +299,12 @@ pub struct App {
     pub routemap_detail_scroll: u16,
     /// Per-router route-map detail cache: (router_id, rm_name) → detail
     pub routemap_cache: HashMap<(Uuid, String), crate::bgp::RouteMapDetail>,
+    /// Per-router prefix-list cache: (router_id, pl_name) → entries
+    pub prefix_list_cache: HashMap<(Uuid, String), Vec<PrefixListEntry>>,
+    /// Per-router community-list cache: (router_id, cl_name) → entries
+    pub community_list_cache: HashMap<(Uuid, String), Vec<CommunityListEntry>>,
+    /// Prefix-list name currently shown in Config tab right panel
+    pub config_pl_name: Option<String>,
 
     // General logs
     pub logs: Vec<String>,
@@ -365,6 +371,16 @@ pub struct App {
     pub rm_editor_editing: bool,
     pub rm_editor_field: usize,
     pub rm_editor_buf: String,
+    /// When true, user is drilling into match/set clauses of the selected entry
+    pub rm_clause_mode: bool,
+    /// "match" or "set"
+    pub rm_clause_type: String,
+    /// Index within the clause list
+    pub rm_clause_idx: usize,
+    /// Buffer for editing a clause value
+    pub rm_clause_buf: String,
+    /// Whether currently editing the clause text
+    pub rm_clause_editing: bool,
 
     // Prefix-list editor state
     pub pl_editor_entries: Vec<PrefixListEntry>,
@@ -456,6 +472,9 @@ impl App {
             config_routemap: None,
             routemap_detail_scroll: 0,
             routemap_cache: HashMap::new(),
+            prefix_list_cache: HashMap::new(),
+            community_list_cache: HashMap::new(),
+            config_pl_name: None,
             logs: vec![format!(
                 "bgp-link-manager started — logs: {}",
                 crate::logging::log_path().display()
@@ -503,6 +522,11 @@ impl App {
             rm_editor_editing: false,
             rm_editor_field: 0,
             rm_editor_buf: String::new(),
+            rm_clause_mode: false,
+            rm_clause_type: String::new(),
+            rm_clause_idx: 0,
+            rm_clause_buf: String::new(),
+            rm_clause_editing: false,
 
             pl_editor_entries: vec![],
             pl_editor_name: String::new(),
@@ -1254,11 +1278,26 @@ impl App {
 
     /// Called when a route-map detail fetch completes.
     pub fn handle_routemap_detail(&mut self, id: Uuid, detail: crate::bgp::RouteMapDetail) {
-        // Cache the result for this router + route-map name
         self.routemap_cache
             .insert((id, detail.name.clone()), detail.clone());
         if self.config_rm_name.as_deref() == Some(detail.name.as_str()) {
             self.config_routemap = Some(detail);
+        }
+    }
+
+    pub fn handle_policy_data(
+        &mut self,
+        router_id: Uuid,
+        prefix_lists: std::collections::HashMap<String, Vec<PrefixListEntry>>,
+        community_lists: std::collections::HashMap<String, Vec<CommunityListEntry>>,
+    ) {
+        for (name, entries) in prefix_lists {
+            self.prefix_list_cache
+                .insert((router_id, name), entries);
+        }
+        for (name, entries) in community_lists {
+            self.community_list_cache
+                .insert((router_id, name), entries);
         }
     }
 
@@ -1279,12 +1318,22 @@ impl App {
             None => return,
         };
         let line = self.config_lines.get(idx).cloned().unwrap_or_default();
+
+        if let Some(pl_name) = extract_prefixlist_name_from_line(&line) {
+            self.config_rm_name = None;
+            self.config_routemap = None;
+            self.routemap_fetch_queued = None;
+            self.config_pl_name = Some(pl_name);
+            return;
+        }
+
+        self.config_pl_name = None;
+
         if let Some(rm_name) = extract_routemap_name_from_line(&line) {
             if self.config_rm_name.as_deref() != Some(&rm_name) {
                 self.config_rm_name = Some(rm_name.clone());
                 self.routemap_detail_scroll = 0;
 
-                // Check cache first — show instantly if available
                 let rid = self.selected_router().map(|r| r.id);
                 if let Some(rid) = rid {
                     if let Some(cached) = self.routemap_cache.get(&(rid, rm_name.clone())) {
@@ -1294,8 +1343,6 @@ impl App {
                 }
 
                 self.config_routemap = None;
-                // Queue the fetch — drained once per tick (200 ms) to prevent
-                // a storm of SSH calls when scrolling through config lines quickly.
                 self.routemap_fetch_queued = Some(rm_name);
             }
         } else {
@@ -1909,6 +1956,8 @@ impl App {
         self.rm_editor_entries = entries;
         self.rm_editor_selected = 0;
         self.rm_editor_editing = false;
+        self.rm_clause_mode = false;
+        self.rm_clause_editing = false;
     }
 
     pub fn rm_editor_generate_preview(&mut self) {
@@ -1927,14 +1976,20 @@ impl App {
     // ── Prefix-list editor helpers ────────────────────────────────────────────
 
     pub fn open_prefixlist_editor(&mut self, name: &str) {
-        if self.selected_router().is_none() {
-            return;
-        }
+        let router_id = match self.selected_router() {
+            Some(r) => r.id,
+            None => return,
+        };
         let entries = self
-            .routemap_cache
-            .values()
-            .flat_map(|d| d.prefix_lists.get(name).cloned())
-            .next()
+            .prefix_list_cache
+            .get(&(router_id, name.to_string()))
+            .cloned()
+            .or_else(|| {
+                self.routemap_cache
+                    .values()
+                    .flat_map(|d| d.prefix_lists.get(name).cloned())
+                    .next()
+            })
             .unwrap_or_default();
 
         self.wizard_mode = WizardMode::PrefixListEdit(name.to_string());
@@ -1972,26 +2027,32 @@ impl App {
     // ── Community-list editor helpers ─────────────────────────────────────────
 
     pub fn open_communitylist_editor(&mut self, name: &str) {
-        if self.selected_router().is_none() {
-            return;
-        }
+        let router_id = match self.selected_router() {
+            Some(r) => r.id,
+            None => return,
+        };
         let entries: Vec<CommunityListEntry> = self
-            .routemap_cache
-            .values()
-            .flat_map(|d| d.community_lists.get(name).cloned())
-            .next()
-            .unwrap_or_default()
-            .iter()
-            .enumerate()
-            .map(|(i, raw)| {
-                let parts: Vec<&str> = raw.splitn(2, char::is_whitespace).collect();
-                CommunityListEntry {
-                    seq: ((i + 1) * 5) as u32,
-                    action: parts.first().unwrap_or(&"permit").to_string(),
-                    community: parts.get(1).unwrap_or(&"").to_string(),
-                }
-            })
-            .collect();
+            .community_list_cache
+            .get(&(router_id, name.to_string()))
+            .cloned()
+            .unwrap_or_else(|| {
+                self.routemap_cache
+                    .values()
+                    .flat_map(|d| d.community_lists.get(name).cloned())
+                    .next()
+                    .unwrap_or_default()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, raw)| {
+                        let parts: Vec<&str> = raw.splitn(2, char::is_whitespace).collect();
+                        CommunityListEntry {
+                            seq: ((i + 1) * 5) as u32,
+                            action: parts.first().unwrap_or(&"permit").to_string(),
+                            community: parts.get(1).unwrap_or(&"").to_string(),
+                        }
+                    })
+                    .collect()
+            });
 
         self.wizard_mode = WizardMode::CommunityListEdit(name.to_string());
         self.wizard_step = WizardStep::Fields;
@@ -2594,6 +2655,12 @@ pub fn apply_buf_to_draft(draft: &mut RouterConfig, field: usize, buf: &str) {
 pub fn extract_routemap_name_from_line(line: &str) -> Option<String> {
     let parts: Vec<&str> = line.split_whitespace().collect();
     let pos = parts.iter().position(|&p| p == "route-map")?;
+    parts.get(pos + 1).map(|s| s.to_string())
+}
+
+pub fn extract_prefixlist_name_from_line(line: &str) -> Option<String> {
+    let parts: Vec<&str> = line.split_whitespace().collect();
+    let pos = parts.iter().position(|&p| p == "prefix-list")?;
     parts.get(pos + 1).map(|s| s.to_string())
 }
 
@@ -3665,6 +3732,12 @@ fn handle_delete_wizard_key(app: &mut App, key: crossterm::event::KeyEvent) {
 fn handle_routemap_editor_key(app: &mut App, key: crossterm::event::KeyEvent) {
     use crossterm::event::KeyCode;
 
+    // ── Clause sub-list mode ────────────────────────────────────────────────
+    if app.rm_clause_mode {
+        handle_rm_clause_key(app, key);
+        return;
+    }
+
     match app.wizard_step {
         WizardStep::Fields => {
             if app.rm_editor_editing {
@@ -3866,6 +3939,24 @@ fn handle_routemap_editor_key(app: &mut App, key: crossterm::event::KeyEvent) {
                             };
                         }
                     }
+                    KeyCode::Char('m') => {
+                        if !app.rm_editor_entries.is_empty() {
+                            app.rm_clause_mode = true;
+                            app.rm_clause_type = "match".into();
+                            app.rm_clause_idx = 0;
+                            app.rm_clause_editing = false;
+                            app.rm_clause_buf.clear();
+                        }
+                    }
+                    KeyCode::Char('t') => {
+                        if !app.rm_editor_entries.is_empty() {
+                            app.rm_clause_mode = true;
+                            app.rm_clause_type = "set".into();
+                            app.rm_clause_idx = 0;
+                            app.rm_clause_editing = false;
+                            app.rm_clause_buf.clear();
+                        }
+                    }
                     KeyCode::Char('d') => {
                         if !app.rm_editor_entries.is_empty() {
                             app.rm_editor_entries.remove(app.rm_editor_selected);
@@ -3896,6 +3987,134 @@ fn handle_routemap_editor_key(app: &mut App, key: crossterm::event::KeyEvent) {
             KeyCode::Enter | KeyCode::Esc => app.wizard_close(),
             _ => {}
         },
+    }
+}
+
+fn handle_rm_clause_key(app: &mut App, key: crossterm::event::KeyEvent) {
+    use crossterm::event::KeyCode;
+
+    let is_match = app.rm_clause_type == "match";
+
+    if app.rm_clause_editing {
+        match key.code {
+            KeyCode::Esc => {
+                app.rm_clause_editing = false;
+            }
+            KeyCode::Enter => {
+                let val = app.rm_clause_buf.clone();
+                if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
+                    let list = if is_match {
+                        &mut entry.match_clauses
+                    } else {
+                        &mut entry.set_clauses
+                    };
+                    if app.rm_clause_idx < list.len() {
+                        list[app.rm_clause_idx] = val;
+                    }
+                }
+                app.rm_clause_editing = false;
+            }
+            KeyCode::Backspace => {
+                app.rm_clause_buf.pop();
+            }
+            KeyCode::Char(c) => app.rm_clause_buf.push(c),
+            _ => {}
+        }
+        return;
+    }
+
+    let clause_len = app
+        .rm_editor_entries
+        .get(app.rm_editor_selected)
+        .map(|e| {
+            if is_match {
+                e.match_clauses.len()
+            } else {
+                e.set_clauses.len()
+            }
+        })
+        .unwrap_or(0);
+
+    match key.code {
+        KeyCode::Esc => {
+            app.rm_clause_mode = false;
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            if app.rm_clause_idx > 0 {
+                app.rm_clause_idx -= 1;
+            }
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if app.rm_clause_idx + 1 < clause_len {
+                app.rm_clause_idx += 1;
+            }
+        }
+        KeyCode::Enter => {
+            if let Some(entry) = app.rm_editor_entries.get(app.rm_editor_selected) {
+                let list = if is_match {
+                    &entry.match_clauses
+                } else {
+                    &entry.set_clauses
+                };
+                if let Some(val) = list.get(app.rm_clause_idx) {
+                    app.rm_clause_buf = val.clone();
+                    app.rm_clause_editing = true;
+                }
+            }
+        }
+        KeyCode::Char('a') => {
+            let placeholder = if is_match {
+                "ip address prefix-list NAME"
+            } else {
+                "local-preference 100"
+            };
+            if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
+                let list = if is_match {
+                    &mut entry.match_clauses
+                } else {
+                    &mut entry.set_clauses
+                };
+                list.push(placeholder.to_string());
+                app.rm_clause_idx = list.len() - 1;
+                app.rm_clause_buf = placeholder.to_string();
+                app.rm_clause_editing = true;
+            }
+        }
+        KeyCode::Char('d') => {
+            if clause_len > 0 {
+                if let Some(entry) = app.rm_editor_entries.get_mut(app.rm_editor_selected) {
+                    let list = if is_match {
+                        &mut entry.match_clauses
+                    } else {
+                        &mut entry.set_clauses
+                    };
+                    list.remove(app.rm_clause_idx);
+                    if app.rm_clause_idx >= list.len() && !list.is_empty() {
+                        app.rm_clause_idx = list.len() - 1;
+                    }
+                }
+            }
+        }
+        KeyCode::Char('p') => {
+            if is_match {
+                if let Some(entry) = app.rm_editor_entries.get(app.rm_editor_selected) {
+                    if let Some(clause) = entry.match_clauses.get(app.rm_clause_idx) {
+                        if clause.contains("prefix-list") {
+                            let pl_name = clause
+                                .split_whitespace()
+                                .last()
+                                .unwrap_or("")
+                                .to_string();
+                            if !pl_name.is_empty() {
+                                app.rm_clause_mode = false;
+                                app.open_prefixlist_editor(&pl_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
     }
 }
 

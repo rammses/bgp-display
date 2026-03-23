@@ -15,6 +15,12 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 
+pub struct PolicyStanza {
+    pub text: String,
+    pub prefix_lists: HashMap<String, Vec<crate::bgp::PrefixListEntry>>,
+    pub community_lists: HashMap<String, Vec<crate::bgp::CommunityListEntry>>,
+}
+
 pub struct CiscoBackend {
     config: RouterConfig,
     ssh: Arc<SshSessionManager>,
@@ -346,15 +352,23 @@ impl CiscoBackend {
 
     // ── fetch_policy_stanza ──────────────────────────────────────────────────
     // Fetches prefix-lists and community-lists from the router and returns
-    // them as config-style lines to append to the rendered BGP stanza.
+    // both the rendered text for config_lines AND structured parsed data
+    // for the prefix_list_cache / community_list_cache.
 
-    pub async fn fetch_policy_stanza(&self) -> String {
-        let mut out = String::new();
+    pub async fn fetch_policy_stanza(
+        &self,
+    ) -> PolicyStanza {
+        let mut text = String::new();
+        let mut prefix_lists: HashMap<String, Vec<crate::bgp::PrefixListEntry>> = HashMap::new();
+        let mut community_lists: HashMap<String, Vec<crate::bgp::CommunityListEntry>> =
+            HashMap::new();
 
         if let Ok(raw) = self
             .ssh_run_or_vtysh("show ip prefix-list", "prefix-list")
             .await
         {
+            // Build per-name raw blocks for structured parsing
+            let mut name_blocks: Vec<(String, String)> = vec![];
             let mut seen_names = std::collections::HashSet::new();
             for line in raw.lines() {
                 let trimmed = line.trim();
@@ -363,43 +377,75 @@ impl CiscoBackend {
                         .strip_prefix("ip prefix-list ")
                         .and_then(|s| s.split_whitespace().next())
                     {
-                        if seen_names.insert(name.to_string()) && !out.is_empty() {
-                            out.push_str("!\n");
+                        if seen_names.insert(name.to_string()) {
+                            if !text.is_empty() {
+                                text.push_str("!\n");
+                            }
+                            name_blocks.push((name.to_string(), String::new()));
                         }
                     }
-                    out.push(' ');
-                    out.push_str(trimmed);
-                    out.push('\n');
+                    text.push(' ');
+                    text.push_str(trimmed);
+                    text.push('\n');
+                    if let Some((_, block)) = name_blocks.last_mut() {
+                        block.push_str(trimmed);
+                        block.push('\n');
+                    }
+                }
+            }
+            for (name, block) in name_blocks {
+                let entries = parse_prefix_list_entries(&block);
+                if !entries.is_empty() {
+                    prefix_lists.insert(name, entries);
                 }
             }
         }
 
-        if !out.is_empty() {
-            out.push_str("!\n");
+        if !text.is_empty() {
+            text.push_str("!\n");
         }
 
         if let Ok(raw) = self
             .ssh_run_or_vtysh("show ip community-list", "community-list")
             .await
         {
+            let mut cl_seq: u32 = 0;
             for line in raw.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("ip community-list")
-                    || trimmed.starts_with("Named Community")
+                let t = line.trim();
+                if t.is_empty()
+                    || t.starts_with("Named Community")
+                    || t.starts_with("ip community-list")
                 {
                     continue;
                 }
-                if (trimmed.contains("permit") || trimmed.contains("deny"))
-                    && !trimmed.is_empty()
-                {
-                    out.push_str(" ip community-list ");
-                    out.push_str(trimmed);
-                    out.push('\n');
+                if t.contains("permit") || t.contains("deny") {
+                    cl_seq += 10;
+                    let parts: Vec<&str> = t.splitn(2, char::is_whitespace).collect();
+                    let (action, community) = if parts.len() == 2 {
+                        (parts[0].to_string(), parts[1].trim().to_string())
+                    } else {
+                        ("permit".to_string(), t.to_string())
+                    };
+                    text.push_str(" ip community-list ");
+                    text.push_str(t);
+                    text.push('\n');
+                    community_lists
+                        .entry("default".to_string())
+                        .or_default()
+                        .push(crate::bgp::CommunityListEntry {
+                            seq: cl_seq,
+                            action,
+                            community,
+                        });
                 }
             }
         }
 
-        out
+        PolicyStanza {
+            text,
+            prefix_lists,
+            community_lists,
+        }
     }
 }
 

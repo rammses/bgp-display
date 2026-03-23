@@ -197,9 +197,16 @@ async fn refresh_router(
                 RouterVendor::Cisco | RouterVendor::VyOs => {
                     let b = CiscoBackend::new(&cfg, Arc::clone(ssh));
                     let policy = b.fetch_policy_stanza().await;
-                    if !policy.is_empty() {
+                    if !policy.text.is_empty() {
                         rendered.push('\n');
-                        rendered.push_str(&policy);
+                        rendered.push_str(&policy.text);
+                    }
+                    if !policy.prefix_lists.is_empty() || !policy.community_lists.is_empty() {
+                        let _ = tx.send(AppEvent::PolicyData {
+                            router_id: id,
+                            prefix_lists: policy.prefix_lists,
+                            community_lists: policy.community_lists,
+                        });
                     }
                 }
                 _ => {}

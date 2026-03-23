@@ -1,6 +1,6 @@
 [package]
 name        = "bgp-link-manager"
-version     = "0.1.0"
+version     = "0.2.0"
 edition     = "2021"
 description = "TUI-based BGP configuration and state manager (Cisco IOS/IOS-XE; Juniper & FortiGate planned)"
 

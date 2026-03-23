@@ -142,6 +142,13 @@ async fn run_loop<B: ratatui::backend::Backend>(
                 rewarmed,
                 dead,
             } => app.handle_ssh_health_report(healthy, rewarmed, dead),
+            AppEvent::PolicyData {
+                router_id,
+                prefix_lists,
+                community_lists,
+            } => {
+                app.handle_policy_data(router_id, prefix_lists, community_lists);
+            }
             AppEvent::ConfigApplied {
                 router_id,
                 description,
@@ -191,6 +198,7 @@ fn event_name(ev: &AppEvent) -> &'static str {
         AppEvent::MtuProbeError(..) => "MtuProbeError",
         AppEvent::SshWarmComplete(..) => "SshWarmComplete",
         AppEvent::SshHealthReport { .. } => "SshHealthReport",
+        AppEvent::PolicyData { .. } => "PolicyData",
         AppEvent::ConfigApplied { .. } => "ConfigApplied",
         AppEvent::ConfigError { .. } => "ConfigError",
     }

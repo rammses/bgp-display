@@ -44,6 +44,12 @@ pub enum AppEvent {
         rewarmed: usize,
         dead: Vec<String>,
     },
+    /// Parsed prefix-list and community-list data from policy stanza fetch.
+    PolicyData {
+        router_id: Uuid,
+        prefix_lists: std::collections::HashMap<String, Vec<crate::bgp::PrefixListEntry>>,
+        community_lists: std::collections::HashMap<String, Vec<crate::bgp::CommunityListEntry>>,
+    },
     /// Config commands successfully applied to a router.
     ConfigApplied {
         router_id: Uuid,
