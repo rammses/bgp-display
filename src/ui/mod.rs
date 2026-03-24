@@ -5,6 +5,7 @@ pub mod dashboard;
 pub mod help_overlay;
 pub mod logs;
 pub mod neighbor_wizard;
+pub mod peer_routes;
 pub mod peers;
 pub mod prefixlist_editor;
 pub mod project_popup;
