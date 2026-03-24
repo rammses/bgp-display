@@ -3,16 +3,11 @@ use std::net::IpAddr;
 
 // ─── Address Family ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum AddressFamily {
+    #[default]
     Ipv4Unicast,
     Ipv6Unicast,
-}
-
-impl Default for AddressFamily {
-    fn default() -> Self {
-        AddressFamily::Ipv4Unicast
-    }
 }
 
 impl std::fmt::Display for AddressFamily {

@@ -1,7 +1,7 @@
-use crate::bgp::CommunityListEntry;
-use crate::router::RouterVendor;
 use super::types::{WizardMode, WizardStep};
 use super::App;
+use crate::bgp::CommunityListEntry;
+use crate::router::RouterVendor;
 
 impl App {
     // ── Route-map editor helpers ──────────────────────────────────────────────

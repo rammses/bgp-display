@@ -1,8 +1,8 @@
+use super::types::{WizardMode, WizardStep};
+use super::App;
 use crate::bgp::NeighborDraft;
 use crate::events::FetchRequest;
 use crate::router::RouterVendor;
-use super::types::{WizardMode, WizardStep};
-use super::App;
 use std::net::IpAddr;
 
 impl App {
@@ -33,22 +33,23 @@ impl App {
         let draft = if let Some(d) = from_desired {
             d
         } else if let Some(peer) = self.current_peers.iter().find(|p| p.neighbor_ip == peer_ip) {
-            let mut d = NeighborDraft::default();
-            d.router_id = router_id;
-            d.neighbor_ip = peer.neighbor_ip.to_string();
-            d.remote_as = peer.remote_as.to_string();
-            d.description = peer.description.clone().unwrap_or_default();
-            d.update_source = peer
-                .update_source
-                .map(|s| s.to_string())
-                .unwrap_or_default();
-            d.next_hop_self = peer.next_hop_self;
-            d.route_reflector_client = peer.route_reflector_client;
-            d.hold_time = peer.hold_time.to_string();
-            d.keepalive = peer.keepalive.to_string();
-            d.bfd = peer.bfd_state.is_some();
-            d.address_family = crate::bgp::AddressFamily::from_ip(&peer.neighbor_ip.to_string());
-            d
+            NeighborDraft {
+                router_id,
+                neighbor_ip: peer.neighbor_ip.to_string(),
+                remote_as: peer.remote_as.to_string(),
+                description: peer.description.clone().unwrap_or_default(),
+                update_source: peer
+                    .update_source
+                    .map(|s| s.to_string())
+                    .unwrap_or_default(),
+                next_hop_self: peer.next_hop_self,
+                route_reflector_client: peer.route_reflector_client,
+                hold_time: peer.hold_time.to_string(),
+                keepalive: peer.keepalive.to_string(),
+                bfd: peer.bfd_state.is_some(),
+                address_family: crate::bgp::AddressFamily::from_ip(&peer.neighbor_ip.to_string()),
+                ..Default::default()
+            }
         } else {
             return;
         };

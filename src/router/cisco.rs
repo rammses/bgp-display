@@ -5,14 +5,14 @@
 
 #![allow(dead_code)]
 
+pub(crate) use crate::router::cisco_parsers::{
+    parse_all_neighbor_details, parse_bgp_table, parse_community_list_entries,
+    parse_neighbor_detail, parse_prefix_list_entries, parse_route_map_entries, NeighborDetail,
+};
 use crate::{
     bgp::{parse_bgp_summary, BgpRoute, BgpSummary},
     router::{ConnectionStatus, RouterConfig},
     ssh::SshSessionManager,
-};
-pub(crate) use crate::router::cisco_parsers::{
-    parse_all_neighbor_details, parse_bgp_table, parse_community_list_entries,
-    parse_neighbor_detail, parse_prefix_list_entries, parse_route_map_entries, NeighborDetail,
 };
 use anyhow::{bail, Context, Result};
 use std::collections::HashMap;

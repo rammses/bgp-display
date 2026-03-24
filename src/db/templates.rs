@@ -6,6 +6,7 @@ use super::RouterDb;
 use crate::bgp::PeerTemplate;
 
 impl RouterDb {
+    #[allow(dead_code)]
     pub fn upsert_peer_template(&self, t: &PeerTemplate) -> Result<()> {
         self.conn.execute(
             "INSERT INTO peer_templates
@@ -44,6 +45,7 @@ impl RouterDb {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn delete_peer_template(&self, id: Uuid) -> Result<()> {
         self.conn.execute(
             "DELETE FROM peer_templates WHERE id = ?1",

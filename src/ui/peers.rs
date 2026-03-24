@@ -1,3 +1,4 @@
+use super::peer_routes::draw_peer_route_view;
 use crate::{
     app::{App, FilterMode},
     bgp::{BgpState, MtuProbeState},
@@ -6,7 +7,6 @@ use crate::{
         C_SELECTED, C_WARN,
     },
 };
-use super::peer_routes::draw_peer_route_view;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},

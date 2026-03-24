@@ -92,6 +92,7 @@ pub enum FetchRequest {
     /// Rollback a previous config change by applying the stored rollback commands.
     RollbackConfig {
         router_id: Uuid,
+        #[allow(dead_code)]
         history_id: Uuid,
         commands: Vec<String>,
         description: String,

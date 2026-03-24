@@ -1,7 +1,13 @@
 use crate::bgp::naming::PolicyNames;
-use crate::bgp::{AddressFamily, CommunityListEntry, NeighborDraft, PrefixListEntry, RouteMapEntry};
+use crate::bgp::{
+    AddressFamily, CommunityListEntry, NeighborDraft, PrefixListEntry, RouteMapEntry,
+};
 
-pub(super) fn vyos_create(draft: &NeighborDraft, _local_as: u32, names: &PolicyNames) -> Vec<String> {
+pub(super) fn vyos_create(
+    draft: &NeighborDraft,
+    _local_as: u32,
+    names: &PolicyNames,
+) -> Vec<String> {
     let ip = &draft.neighbor_ip;
     let is_v6 = draft.address_family == AddressFamily::Ipv6Unicast;
     let af = if is_v6 {

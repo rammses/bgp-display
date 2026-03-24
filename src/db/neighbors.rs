@@ -126,27 +126,29 @@ impl RouterDb {
             };
 
             let af = crate::bgp::AddressFamily::from_ip(&neighbor_ip);
-            let mut draft = NeighborDraft::default();
-            draft.id = id_s.parse().ok();
-            draft.router_id = Some(router_id);
-            draft.neighbor_ip = neighbor_ip;
-            draft.remote_as = remote_as.to_string();
-            draft.description = description;
-            draft.update_source = update_source.unwrap_or_default();
-            draft.next_hop_self = nhs != 0;
-            draft.route_reflector_client = rrc != 0;
-            draft.hold_time = hold.to_string();
-            draft.keepalive = keep.to_string();
-            draft.password = password;
-            draft.bfd = bfd != 0;
-            draft.soft_reconfiguration_inbound = soft != 0;
-            draft.address_family = af;
-            draft.created_at = chrono::DateTime::parse_from_rfc3339(&created_s)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc));
-            draft.updated_at = chrono::DateTime::parse_from_rfc3339(&updated_s)
-                .ok()
-                .map(|dt| dt.with_timezone(&Utc));
+            let draft = NeighborDraft {
+                id: id_s.parse().ok(),
+                router_id: Some(router_id),
+                neighbor_ip,
+                remote_as: remote_as.to_string(),
+                description,
+                update_source: update_source.unwrap_or_default(),
+                next_hop_self: nhs != 0,
+                route_reflector_client: rrc != 0,
+                hold_time: hold.to_string(),
+                keepalive: keep.to_string(),
+                password,
+                bfd: bfd != 0,
+                soft_reconfiguration_inbound: soft != 0,
+                address_family: af,
+                created_at: chrono::DateTime::parse_from_rfc3339(&created_s)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc)),
+                updated_at: chrono::DateTime::parse_from_rfc3339(&updated_s)
+                    .ok()
+                    .map(|dt| dt.with_timezone(&Utc)),
+                ..Default::default()
+            };
             drafts.push(draft);
         }
         Ok(drafts)

@@ -157,7 +157,10 @@ pub(super) fn fortigate_prefixlist_save(name: &str, entries: &[PrefixListEntry])
     cmds
 }
 
-pub(super) fn fortigate_communitylist_save(name: &str, entries: &[CommunityListEntry]) -> Vec<String> {
+pub(super) fn fortigate_communitylist_save(
+    name: &str,
+    entries: &[CommunityListEntry],
+) -> Vec<String> {
     let mut cmds = vec![
         "config router community-list".into(),
         format!("edit {name}"),

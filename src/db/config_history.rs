@@ -11,6 +11,7 @@ pub struct ConfigHistoryEntry {
     pub router_id: Uuid,
     pub action: String,
     pub description: String,
+    #[allow(dead_code)]
     pub commands: Vec<String>,
     pub rollback: Vec<String>,
     pub applied_at: String,
@@ -80,6 +81,7 @@ impl RouterDb {
         Ok(entries)
     }
 
+    #[allow(dead_code)]
     pub fn get_config_entry(&self, id: Uuid) -> Result<Option<ConfigHistoryEntry>> {
         let mut stmt = self.conn.prepare(
             "SELECT router_id, action, description, commands, rollback, applied_at

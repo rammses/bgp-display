@@ -28,8 +28,8 @@ mod types;
 mod wizard;
 mod wizard_keys;
 
-pub use helpers::{apply_buf_to_draft, editor_field_value};
 pub(crate) use helpers::truncate_error;
+pub use helpers::{apply_buf_to_draft, editor_field_value};
 pub use keys::handle_key;
 pub use types::*;
 
@@ -224,6 +224,7 @@ pub struct App {
     pub wizard_diff: Vec<(String, String)>,
 
     // Peer state transition history: (router_id, peer_ip) → deque of (timestamp, old_state, new_state)
+    #[allow(clippy::type_complexity)]
     pub peer_state_history:
         HashMap<(Uuid, IpAddr), VecDeque<(chrono::DateTime<chrono::Utc>, String, String)>>,
 
@@ -400,6 +401,7 @@ impl App {
 
     // ── Peer Template helpers ────────────────────────────────────────────────
 
+    #[allow(dead_code)]
     pub fn apply_template_to_draft(&mut self, template_idx: usize) {
         let template = match self.peer_templates.get(template_idx) {
             Some(t) => t.clone(),
@@ -426,6 +428,7 @@ impl App {
 
     // ── JSON Export / Import ────────────────────────────────────────────────
 
+    #[allow(dead_code)]
     pub fn export_config(&self) -> String {
         let routers: Vec<crate::export::ExportRouter> = self
             .all_routers
@@ -454,7 +457,7 @@ impl App {
             .iter()
             .map(|p| crate::export::ExportProject {
                 name: p.name.clone(),
-                router_names: p.router_ids.iter().map(|id| router_name(id)).collect(),
+                router_names: p.router_ids.iter().map(&router_name).collect(),
             })
             .collect();
 
@@ -482,6 +485,7 @@ impl App {
             .unwrap_or_else(|e| format!("{{\"error\": \"{e}\"}}"))
     }
 
+    #[allow(dead_code)]
     pub fn import_config(&mut self, json: &str) -> anyhow::Result<String> {
         let data = crate::export::import_json(json)?;
 
@@ -550,19 +554,21 @@ impl App {
                 Some(r) => r.clone(),
                 None => continue,
             };
-            let mut draft = NeighborDraft::default();
-            draft.router_id = Some(router.id);
-            draft.neighbor_ip = en.neighbor_ip.clone();
-            draft.remote_as = en.remote_as.clone();
-            draft.description = en.description.clone();
-            draft.update_source = en.update_source.clone();
-            draft.next_hop_self = en.next_hop_self;
-            draft.route_reflector_client = en.route_reflector_client;
-            draft.hold_time = en.hold_time.clone();
-            draft.keepalive = en.keepalive.clone();
-            draft.bfd = en.bfd;
-            draft.soft_reconfiguration_inbound = en.soft_reconfiguration_inbound;
-            draft.address_family = crate::bgp::AddressFamily::from_ip(&en.neighbor_ip);
+            let draft = NeighborDraft {
+                router_id: Some(router.id),
+                neighbor_ip: en.neighbor_ip.clone(),
+                remote_as: en.remote_as.clone(),
+                description: en.description.clone(),
+                update_source: en.update_source.clone(),
+                next_hop_self: en.next_hop_self,
+                route_reflector_client: en.route_reflector_client,
+                hold_time: en.hold_time.clone(),
+                keepalive: en.keepalive.clone(),
+                bfd: en.bfd,
+                soft_reconfiguration_inbound: en.soft_reconfiguration_inbound,
+                address_family: crate::bgp::AddressFamily::from_ip(&en.neighbor_ip),
+                ..Default::default()
+            };
             db.upsert_neighbor(router.id, &draft)?;
             self.desired_neighbors
                 .entry(router.id)
@@ -589,4 +595,3 @@ impl App {
         ))
     }
 }
-

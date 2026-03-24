@@ -11,12 +11,12 @@
 // The salt used for key-derivation is stored in the DB itself (kv table) so
 // the same passphrase always produces the same key for a given database.
 
-mod crypto;
-mod routers;
-mod projects;
-mod neighbors;
-mod templates;
 mod config_history;
+mod crypto;
+mod neighbors;
+mod projects;
+mod routers;
+mod templates;
 
 pub use config_history::ConfigHistoryEntry;
 

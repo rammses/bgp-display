@@ -1,7 +1,13 @@
 use crate::bgp::naming::PolicyNames;
-use crate::bgp::{AddressFamily, CommunityListEntry, NeighborDraft, PrefixListEntry, RouteMapEntry};
+use crate::bgp::{
+    AddressFamily, CommunityListEntry, NeighborDraft, PrefixListEntry, RouteMapEntry,
+};
 
-pub(super) fn cisco_create(draft: &NeighborDraft, local_as: u32, names: &PolicyNames) -> Vec<String> {
+pub(super) fn cisco_create(
+    draft: &NeighborDraft,
+    local_as: u32,
+    names: &PolicyNames,
+) -> Vec<String> {
     let ip = &draft.neighbor_ip;
     let is_v6 = draft.address_family == AddressFamily::Ipv6Unicast;
     let mut cmds = vec![format!("router bgp {local_as}")];
@@ -29,7 +35,7 @@ pub(super) fn cisco_create(draft: &NeighborDraft, local_as: u32, names: &PolicyN
     }
 
     if is_v6 {
-        cmds.push(format!(" address-family ipv6 unicast"));
+        cmds.push(" address-family ipv6 unicast".to_string());
         cmds.push(format!("  neighbor {ip} activate"));
     }
     if draft.next_hop_self {
