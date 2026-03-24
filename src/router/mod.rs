@@ -3,6 +3,7 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 pub mod cisco;
+pub mod cisco_parsers;
 pub mod citrix;
 pub mod commands;
 pub mod fortigate;
