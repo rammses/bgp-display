@@ -186,7 +186,6 @@ impl BgpPeer {
     }
 }
 
-
 // ─── BGP Route ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -660,7 +659,10 @@ impl PrefixListEntry {
     /// Validate a prefix-list entry. Returns Ok(()) or a human-readable error.
     pub fn validate(&self) -> Result<(), String> {
         if self.action != "permit" && self.action != "deny" {
-            return Err(format!("Action must be 'permit' or 'deny', got '{}'", self.action));
+            return Err(format!(
+                "Action must be 'permit' or 'deny', got '{}'",
+                self.action
+            ));
         }
 
         let parts: Vec<&str> = self.prefix.split_whitespace().collect();
@@ -698,14 +700,18 @@ impl PrefixListEntry {
         while i + 1 < parts.len() {
             match parts[i] {
                 "ge" => {
-                    ge = Some(parts[i + 1].parse().map_err(|_| {
-                        format!("Invalid ge value: '{}'", parts[i + 1])
-                    })?);
+                    ge = Some(
+                        parts[i + 1]
+                            .parse()
+                            .map_err(|_| format!("Invalid ge value: '{}'", parts[i + 1]))?,
+                    );
                 }
                 "le" => {
-                    le = Some(parts[i + 1].parse().map_err(|_| {
-                        format!("Invalid le value: '{}'", parts[i + 1])
-                    })?);
+                    le = Some(
+                        parts[i + 1]
+                            .parse()
+                            .map_err(|_| format!("Invalid le value: '{}'", parts[i + 1]))?,
+                    );
                 }
                 _ => {}
             }

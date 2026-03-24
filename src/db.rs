@@ -544,7 +544,9 @@ impl RouterDb {
         Ok(drafts)
     }
 
-    pub fn load_all_neighbors(&self) -> Result<std::collections::HashMap<Uuid, Vec<NeighborDraft>>> {
+    pub fn load_all_neighbors(
+        &self,
+    ) -> Result<std::collections::HashMap<Uuid, Vec<NeighborDraft>>> {
         let mut stmt = self
             .conn
             .prepare("SELECT DISTINCT router_id FROM neighbors")?;
@@ -584,7 +586,11 @@ impl RouterDb {
                 t.name,
                 t.remote_as,
                 t.description_prefix,
-                if t.update_source.is_empty() { None } else { Some(&t.update_source) },
+                if t.update_source.is_empty() {
+                    None
+                } else {
+                    Some(&t.update_source)
+                },
                 t.next_hop_self as i32,
                 t.route_reflector_client as i32,
                 t.hold_time.trim().parse::<u16>().unwrap_or(180) as i32,
@@ -660,10 +666,8 @@ impl RouterDb {
     ) -> Result<Uuid> {
         let id = Uuid::new_v4();
         let now = Utc::now().to_rfc3339();
-        let cmd_json =
-            serde_json::to_string(commands).unwrap_or_else(|_| "[]".into());
-        let rb_json =
-            serde_json::to_string(rollback).unwrap_or_else(|_| "[]".into());
+        let cmd_json = serde_json::to_string(commands).unwrap_or_else(|_| "[]".into());
+        let rb_json = serde_json::to_string(rollback).unwrap_or_else(|_| "[]".into());
 
         self.conn.execute(
             "INSERT INTO config_history (id, router_id, action, description, commands, rollback, applied_at)
@@ -734,8 +738,8 @@ impl RouterDb {
             })
             .ok();
 
-        Ok(result.map(|(rid_s, action, desc, cmd_json, rb_json, applied)| {
-            ConfigHistoryEntry {
+        Ok(result.map(
+            |(rid_s, action, desc, cmd_json, rb_json, applied)| ConfigHistoryEntry {
                 id,
                 router_id: rid_s.parse().unwrap_or_else(|_| Uuid::new_v4()),
                 action,
@@ -743,8 +747,8 @@ impl RouterDb {
                 commands: serde_json::from_str(&cmd_json).unwrap_or_default(),
                 rollback: serde_json::from_str(&rb_json).unwrap_or_default(),
                 applied_at: applied,
-            }
-        }))
+            },
+        ))
     }
 }
 

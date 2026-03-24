@@ -156,16 +156,10 @@ fn syntax_highlight(line: &str) -> Line<'static> {
         ));
     }
     if s.contains("prefix-list") {
-        return Line::from(Span::styled(
-            s,
-            Style::default().fg(Color::LightGreen),
-        ));
+        return Line::from(Span::styled(s, Style::default().fg(Color::LightGreen)));
     }
     if s.contains("community-list") {
-        return Line::from(Span::styled(
-            s,
-            Style::default().fg(Color::LightMagenta),
-        ));
+        return Line::from(Span::styled(s, Style::default().fg(Color::LightMagenta)));
     }
     if s.contains("remote-as") {
         return Line::from(Span::styled(s, Style::default().fg(Color::LightBlue)));
@@ -395,7 +389,10 @@ fn draw_prefixlist_detail(f: &mut Frame, app: &App, pl_name: &str, area: Rect) {
             }
         }
         _ => {
-            lines.push(Line::from(Span::styled("  (no entries cached — press e to edit)", dim)));
+            lines.push(Line::from(Span::styled(
+                "  (no entries cached — press e to edit)",
+                dim,
+            )));
         }
     }
 
@@ -411,10 +408,7 @@ fn draw_prefixlist_detail(f: &mut Frame, app: &App, pl_name: &str, area: Rect) {
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(C_BORDER))
-                .title(Span::styled(
-                    title,
-                    Style::default().fg(Color::LightGreen),
-                )),
+                .title(Span::styled(title, Style::default().fg(Color::LightGreen))),
         )
         .wrap(Wrap { trim: false });
     f.render_widget(para, area);

@@ -188,14 +188,8 @@ fn draw_review(f: &mut Frame, app: &App, area: Rect) {
         for (label, change) in &app.wizard_diff {
             diff_lines.push(Line::from(vec![
                 Span::raw("  "),
-                Span::styled(
-                    format!("{label}: "),
-                    Style::default().fg(C_HEADER),
-                ),
-                Span::styled(
-                    change.clone(),
-                    Style::default().fg(C_ESTABLISHED),
-                ),
+                Span::styled(format!("{label}: "), Style::default().fg(C_HEADER)),
+                Span::styled(change.clone(), Style::default().fg(C_ESTABLISHED)),
             ]));
         }
         diff_lines.push(Line::from(Span::styled(

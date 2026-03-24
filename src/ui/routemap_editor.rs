@@ -40,7 +40,11 @@ fn draw_entries(f: &mut Frame, app: &App, area: Rect) {
                 Constraint::Length(3),
             ]
         } else {
-            vec![Constraint::Min(0), Constraint::Length(0), Constraint::Length(3)]
+            vec![
+                Constraint::Min(0),
+                Constraint::Length(0),
+                Constraint::Length(3),
+            ]
         })
         .split(area);
 
@@ -74,7 +78,13 @@ fn draw_entries(f: &mut Frame, app: &App, area: Rect) {
 
     for (i, entry) in app.rm_editor_entries.iter().enumerate() {
         let is_sel = i == app.rm_editor_selected;
-        let marker = if is_sel && !in_clause { "▶ " } else if is_sel && in_clause { "● " } else { "  " };
+        let marker = if is_sel && !in_clause {
+            "▶ "
+        } else if is_sel && in_clause {
+            "● "
+        } else {
+            "  "
+        };
         let sel_style = if is_sel {
             Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)
         } else {

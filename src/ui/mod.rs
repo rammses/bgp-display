@@ -281,9 +281,7 @@ fn draw_history_popup(f: &mut Frame, app: &mut App) {
         .border_style(Style::default().fg(C_SELECTED))
         .title(Span::styled(
             " Config History (u:undo  Esc:close) ",
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(area);
@@ -306,7 +304,10 @@ fn draw_history_popup(f: &mut Frame, app: &mut App) {
                 " [undoable]"
             };
             let line = Line::from(vec![
-                Span::styled(&entry.applied_at[..19.min(entry.applied_at.len())], Style::default().fg(C_DIM)),
+                Span::styled(
+                    &entry.applied_at[..19.min(entry.applied_at.len())],
+                    Style::default().fg(C_DIM),
+                ),
                 Span::raw("  "),
                 Span::styled(&entry.action, Style::default().fg(C_HEADER)),
                 Span::raw("  "),
@@ -344,9 +345,7 @@ fn draw_clone_popup(f: &mut Frame, app: &mut App) {
         .border_style(Style::default().fg(C_SELECTED))
         .title(Span::styled(
             " Clone Neighbor to Router ",
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(area);
@@ -357,7 +356,7 @@ fn draw_clone_popup(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(1), // neighbor IP info
             Constraint::Length(1), // separator
-            Constraint::Min(1),   // router list
+            Constraint::Min(1),    // router list
             Constraint::Length(1), // help line
         ])
         .split(inner);
@@ -366,9 +365,7 @@ fn draw_clone_popup(f: &mut Frame, app: &mut App) {
         Span::raw("  Cloning: "),
         Span::styled(
             neighbor_ip.as_str(),
-            Style::default()
-                .fg(C_HEADER)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_HEADER).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
             format!("  (AS {})", draft.remote_as),
@@ -384,9 +381,7 @@ fn draw_clone_popup(f: &mut Frame, app: &mut App) {
         .map(|(i, r)| {
             let vendor = format!("[{}]", r.vendor);
             let style = if i == selected {
-                Style::default()
-                    .fg(C_SELECTED)
-                    .add_modifier(Modifier::BOLD)
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::White)
             };
@@ -404,11 +399,7 @@ fn draw_clone_popup(f: &mut Frame, app: &mut App) {
     list_state.select(Some(selected));
 
     let list = ratatui::widgets::List::new(items)
-        .highlight_style(
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
-        )
+        .highlight_style(Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD))
         .highlight_symbol("▶ ");
 
     f.render_stateful_widget(list, chunks[2], &mut list_state);
@@ -464,9 +455,7 @@ fn draw_confirm_dialog(f: &mut Frame, app: &App) {
         .border_style(Style::default().fg(C_ERROR))
         .title(Span::styled(
             title,
-            Style::default()
-                .fg(C_ERROR)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD),
         ));
 
     let inner = block.inner(area);
@@ -486,16 +475,12 @@ fn draw_confirm_dialog(f: &mut Frame, app: &App) {
     let hint = Line::from(vec![
         Span::styled(
             " y/Enter",
-            Style::default()
-                .fg(C_ERROR)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_ERROR).add_modifier(Modifier::BOLD),
         ),
         Span::styled(":confirm  ", Style::default().fg(C_DIM)),
         Span::styled(
             "n/Esc",
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
         ),
         Span::styled(":cancel", Style::default().fg(C_DIM)),
     ]);

@@ -1,5 +1,7 @@
 use crate::bgp::naming::{generate_policy_names, PolicyNames};
-use crate::bgp::{AddressFamily, CommunityListEntry, NeighborDraft, PrefixListEntry, RouteMapEntry};
+use crate::bgp::{
+    AddressFamily, CommunityListEntry, NeighborDraft, PrefixListEntry, RouteMapEntry,
+};
 use crate::router::RouterVendor;
 use std::net::IpAddr;
 
@@ -117,8 +119,16 @@ fn cisco_create(draft: &NeighborDraft, local_as: u32, names: &PolicyNames) -> Ve
     cmds.push("exit".into());
 
     // deny-all prefix-lists
-    let pl_cmd = if is_v6 { "ipv6 prefix-list" } else { "ip prefix-list" };
-    let deny_prefix = if is_v6 { "::/0 le 128" } else { "0.0.0.0/0 le 32" };
+    let pl_cmd = if is_v6 {
+        "ipv6 prefix-list"
+    } else {
+        "ip prefix-list"
+    };
+    let deny_prefix = if is_v6 {
+        "::/0 le 128"
+    } else {
+        "0.0.0.0/0 le 32"
+    };
     cmds.push(format!("{pl_cmd} {} deny {deny_prefix}", names.pl_in));
     cmds.push(format!("{pl_cmd} {} deny {deny_prefix}", names.pl_out));
 
@@ -128,7 +138,11 @@ fn cisco_create(draft: &NeighborDraft, local_as: u32, names: &PolicyNames) -> Ve
 fn vyos_create(draft: &NeighborDraft, _local_as: u32, names: &PolicyNames) -> Vec<String> {
     let ip = &draft.neighbor_ip;
     let is_v6 = draft.address_family == AddressFamily::Ipv6Unicast;
-    let af = if is_v6 { "ipv6-unicast" } else { "ipv4-unicast" };
+    let af = if is_v6 {
+        "ipv6-unicast"
+    } else {
+        "ipv4-unicast"
+    };
     let base = format!("set protocols bgp neighbor {ip}");
     let mut cmds = vec![
         format!("{base} remote-as {}", draft.remote_as),
@@ -142,9 +156,7 @@ fn vyos_create(draft: &NeighborDraft, _local_as: u32, names: &PolicyNames) -> Ve
         cmds.push(format!("{base} address-family {af} nexthop-self"));
     }
     if draft.route_reflector_client {
-        cmds.push(format!(
-            "{base} address-family {af} route-reflector-client"
-        ));
+        cmds.push(format!("{base} address-family {af} route-reflector-client"));
     }
 
     let hold: u16 = draft.hold_time.parse().unwrap_or(180);
@@ -596,11 +608,7 @@ fn fortigate_communitylist_save(name: &str, entries: &[CommunityListEntry]) -> V
 
 // ─── Neighbor shutdown toggle ────────────────────────────────────────────────
 
-pub fn shutdown_neighbor_commands(
-    vendor: &RouterVendor,
-    ip: IpAddr,
-    local_as: u32,
-) -> Vec<String> {
+pub fn shutdown_neighbor_commands(vendor: &RouterVendor, ip: IpAddr, local_as: u32) -> Vec<String> {
     let ip = ip.to_string();
     match vendor {
         RouterVendor::Cisco | RouterVendor::PfSense | RouterVendor::CitrixVpx => {

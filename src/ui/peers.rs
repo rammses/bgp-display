@@ -297,10 +297,7 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
                             C_WARN
                         };
                         lines.push(Line::from(vec![
-                            Span::styled(
-                                format!("  {time_str}  "),
-                                Style::default().fg(C_DIM),
-                            ),
+                            Span::styled(format!("  {time_str}  "), Style::default().fg(C_DIM)),
                             Span::styled(
                                 format!("{old_s} → {new_s}"),
                                 Style::default().fg(arrow_color),

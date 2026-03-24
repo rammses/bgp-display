@@ -355,9 +355,7 @@ impl CiscoBackend {
     // both the rendered text for config_lines AND structured parsed data
     // for the prefix_list_cache / community_list_cache.
 
-    pub async fn fetch_policy_stanza(
-        &self,
-    ) -> PolicyStanza {
+    pub async fn fetch_policy_stanza(&self) -> PolicyStanza {
         let mut text = String::new();
         let mut prefix_lists: HashMap<String, Vec<crate::bgp::PrefixListEntry>> = HashMap::new();
         let mut community_lists: HashMap<String, Vec<crate::bgp::CommunityListEntry>> =
