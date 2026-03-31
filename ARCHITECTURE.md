@@ -20,6 +20,7 @@ Deep-dive reference for contributors and maintainers. Covers every module, data 
   - [VyOS / FRRouting](#vyos--frrouting)
   - [Citrix NetScaler / VPX](#citrix-netscaler--vpx)
   - [pfSense](#pfsense)
+  - [A10 Networks ADC](#a10-networks-adc)
   - [Mock](#mock)
 - [BGP Parsing Pipeline](#bgp-parsing-pipeline)
 - [Data Refresh Cycle](#data-refresh-cycle)
@@ -133,6 +134,7 @@ src/
 │   ├── vyos.rs          VyOsBackend — raw_ssh_run + vtysh_run, sshpass
 │   ├── citrix.rs        CitrixVpxBackend — interactive pipe pattern
 │   ├── pfsense.rs       PfSenseBackend — menu option 8 shell entry
+│   ├── a10.rs           A10Backend — direct shell + piped config
 │   └── mock.rs          MockBackend — generated test data
 │
 └── ui/
@@ -210,14 +212,14 @@ RouteMapDetail
 RouterConfig
 ├── id: Uuid                            Stable identifier
 ├── name / hostname: String
-├── vendor: RouterVendor                Cisco | VyOs | CitrixVpx | PfSense
+├── vendor: RouterVendor                Cisco | VyOs | CitrixVpx | PfSense | FortiGate | A10
 ├── ssh_port: u16
 ├── username: String
 ├── password: Option<String>            Decrypted in-memory, encrypted at rest
 ├── local_as: Option<u32>               Discovered from BGP summary
 └── router_id: Option<IpAddr>           Discovered from BGP summary
 
-RouterVendor   { Cisco, VyOs, CitrixVpx, PfSense }
+RouterVendor   { Cisco, VyOs, CitrixVpx, PfSense, FortiGate, A10 }
 ConnectionStatus { Disconnected, Connecting, Connected, Error(String) }
 Project        { id: Uuid, name: String, router_ids: Vec<Uuid> }
 ```
@@ -367,6 +369,7 @@ enum RouterBackend {
     VyOs(VyOsBackend),
     CitrixVpx(CitrixVpxBackend),
     PfSense(PfSenseBackend),
+    A10(A10Backend),
 }
 ```
 
@@ -433,6 +436,14 @@ show ip bgp summary  (with vtysh fallback)
 Uses `-T` (no PTY) and writes to child stdin via `AsyncWriteExt`.
 
 **Output cleaning:** `strip_menu_noise()` removes pfSense banner art (`***`), menu items (digit + `)`), `Enter an option:` prompts, WAN/LAN/OPT lines, shell prompts.
+
+### A10 Networks ADC
+
+**SSH pattern:** Direct command execution via `run_cmd()` for show commands (Cisco-like CLI). Config writes use `run_piped()` with `configure` / `end` / `write memory` framing.
+
+**Refresh flow:** `show ip bgp summary` → `parse_bgp_summary()`, then `show ip bgp neighbors` → `parse_all_neighbor_details()`. Reuses all Cisco parsers — ACOS BGP output follows Cisco IOS conventions.
+
+**Output cleaning:** `strip_a10_noise()` removes ACOS prompt lines and login banners.
 
 ### Mock
 

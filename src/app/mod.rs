@@ -509,6 +509,7 @@ impl App {
                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
                 "pfsense" => RouterVendor::PfSense,
                 "fortigate" => RouterVendor::FortiGate,
+                "a10" => RouterVendor::A10,
                 _ => RouterVendor::Cisco,
             };
             let rc = RouterConfig {

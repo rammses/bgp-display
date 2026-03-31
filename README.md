@@ -19,7 +19,7 @@
 - Encrypted credential storage (AES-256-GCM, Argon2id key derivation)
 - SSH via system OpenSSH with ControlMaster multiplexing
 
-**Supported routers:** Cisco IOS / IOS-XE · VyOS 1.5 (FRRouting) · Citrix VPX · pfSense · FortiGate (with VDOM)
+**Supported routers:** Cisco IOS / IOS-XE · VyOS 1.5 (FRRouting) · Citrix VPX · pfSense · FortiGate (with VDOM) · A10 Networks ADC
 
 ---
 
@@ -105,6 +105,7 @@ After unlocking, press **`6`** to open the **Routers** tab and add your first ro
 | Citrix VPX | Shell pipe | Full |
 | pfSense | Piped stdin | Full |
 | FortiGate | Piped stdin + VDOM | Full |
+| A10 Networks ADC | Direct shell + piped config | Full |
 
 ---
 
@@ -149,7 +150,8 @@ src/
 │   ├── citrix.rs        Citrix VPX
 │   ├── pfsense.rs       pfSense
 │   ├── fortigate.rs     FortiGate (VDOM)
-│   └── commands.rs      Vendor-specific CLI generation
+│   ├── a10.rs           A10 Networks ADC (ACOS)
+│   └── commands/        Vendor-specific CLI generation
 └── ui/
     ├── mod.rs            Layout, colour palette, overlays
     ├── dashboard.rs      Tab 1

@@ -1,3 +1,4 @@
+mod a10;
 mod cisco;
 mod fortigate;
 mod vyos;
@@ -21,6 +22,7 @@ pub fn create_neighbor_commands(
         }
         RouterVendor::VyOs => vyos::vyos_create(draft, local_as, &names),
         RouterVendor::FortiGate => fortigate::fortigate_create(draft, &names),
+        RouterVendor::A10 => a10::a10_create(draft, local_as, &names),
     }
 }
 
@@ -36,7 +38,10 @@ pub fn delete_neighbor_commands(
     let ip = neighbor_ip.to_string();
 
     match vendor {
-        RouterVendor::Cisco | RouterVendor::PfSense | RouterVendor::CitrixVpx => {
+        RouterVendor::Cisco
+        | RouterVendor::PfSense
+        | RouterVendor::CitrixVpx
+        | RouterVendor::A10 => {
             vec![
                 format!("router bgp {local_as}"),
                 format!(" no neighbor {ip}"),
@@ -93,6 +98,7 @@ pub fn routemap_save_commands(
         }
         RouterVendor::VyOs => vyos::vyos_routemap_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_routemap_save(name, entries),
+        RouterVendor::A10 => a10::a10_routemap_save(name, entries),
     }
 }
 
@@ -109,6 +115,7 @@ pub fn prefixlist_save_commands(
         }
         RouterVendor::VyOs => vyos::vyos_prefixlist_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_prefixlist_save(name, entries),
+        RouterVendor::A10 => a10::a10_prefixlist_save(name, entries),
     }
 }
 
@@ -125,6 +132,7 @@ pub fn communitylist_save_commands(
         }
         RouterVendor::VyOs => vyos::vyos_communitylist_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_communitylist_save(name, entries),
+        RouterVendor::A10 => a10::a10_communitylist_save(name, entries),
     }
 }
 
@@ -133,7 +141,10 @@ pub fn communitylist_save_commands(
 pub fn shutdown_neighbor_commands(vendor: &RouterVendor, ip: IpAddr, local_as: u32) -> Vec<String> {
     let ip = ip.to_string();
     match vendor {
-        RouterVendor::Cisco | RouterVendor::PfSense | RouterVendor::CitrixVpx => {
+        RouterVendor::Cisco
+        | RouterVendor::PfSense
+        | RouterVendor::CitrixVpx
+        | RouterVendor::A10 => {
             vec![
                 format!("router bgp {local_as}"),
                 format!(" neighbor {ip} shutdown"),
@@ -164,7 +175,10 @@ pub fn no_shutdown_neighbor_commands(
 ) -> Vec<String> {
     let ip = ip.to_string();
     match vendor {
-        RouterVendor::Cisco | RouterVendor::PfSense | RouterVendor::CitrixVpx => {
+        RouterVendor::Cisco
+        | RouterVendor::PfSense
+        | RouterVendor::CitrixVpx
+        | RouterVendor::A10 => {
             vec![
                 format!("router bgp {local_as}"),
                 format!(" no neighbor {ip} shutdown"),

@@ -47,6 +47,7 @@ pub fn apply_buf_to_draft(draft: &mut RouterConfig, field: usize, buf: &str) {
                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
                 "pfsense" => RouterVendor::PfSense,
                 "fortigate" => RouterVendor::FortiGate,
+                "a10" => RouterVendor::A10,
                 _ => RouterVendor::Cisco,
             }
         }

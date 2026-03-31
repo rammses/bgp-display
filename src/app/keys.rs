@@ -101,7 +101,8 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         RouterVendor::VyOs => RouterVendor::CitrixVpx,
                         RouterVendor::CitrixVpx => RouterVendor::PfSense,
                         RouterVendor::PfSense => RouterVendor::FortiGate,
-                        RouterVendor::FortiGate => RouterVendor::Cisco,
+                        RouterVendor::FortiGate => RouterVendor::A10,
+                        RouterVendor::A10 => RouterVendor::Cisco,
                     };
                     app.editor_buf = draft.vendor.to_string();
                 }

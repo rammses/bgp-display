@@ -277,7 +277,7 @@ Add, edit, and delete routers. Changes persist immediately to the encrypted data
 
 ### Vendor cycle (Space key on field 6)
 
-Cisco → VyOs → CitrixVpx → PfSense → FortiGate → Cisco
+Cisco → VyOs → CitrixVpx → PfSense → FortiGate → A10 → Cisco
 
 ### Routers shortcuts
 

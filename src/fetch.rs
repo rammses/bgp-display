@@ -169,6 +169,16 @@ async fn refresh_router(
                     Err(e) => Err(e),
                 }
             }
+            RouterVendor::A10 => {
+                let mut b = crate::router::a10::A10Backend::new(&cfg, Arc::clone(ssh));
+                match b.refresh().await {
+                    Ok(s) => {
+                        let r = b.get_routes().await.unwrap_or_default();
+                        Ok((s, r))
+                    }
+                    Err(e) => Err(e),
+                }
+            }
         };
 
     let elapsed_us = start.elapsed().as_micros();
@@ -265,6 +275,11 @@ async fn fetch_route_map(
                 .fetch_route_map_detail(rm_name)
                 .await
         }
+        RouterVendor::A10 => {
+            crate::router::a10::A10Backend::new(&cfg, Arc::clone(ssh))
+                .fetch_route_map_detail(rm_name)
+                .await
+        }
     };
 
     let elapsed_ms = start.elapsed().as_millis();
@@ -326,6 +341,11 @@ async fn fetch_peer_routes(
                 .get_peer_routes(ip, dir)
                 .await
         }
+        RouterVendor::A10 => {
+            crate::router::a10::A10Backend::new(&cfg, Arc::clone(ssh))
+                .get_peer_routes(ip, dir)
+                .await
+        }
     };
 
     let elapsed_ms = start.elapsed().as_millis();
@@ -384,6 +404,11 @@ async fn fetch_mtu(
         }
         RouterVendor::FortiGate => {
             crate::router::fortigate::FortiGateBackend::new(&cfg, Arc::clone(ssh))
+                .ping_mtu(target)
+                .await
+        }
+        RouterVendor::A10 => {
+            crate::router::a10::A10Backend::new(&cfg, Arc::clone(ssh))
                 .ping_mtu(target)
                 .await
         }
@@ -456,6 +481,11 @@ async fn apply_config(
         }
         RouterVendor::FortiGate => {
             crate::router::fortigate::FortiGateBackend::new(&cfg, Arc::clone(ssh))
+                .write_config(commands)
+                .await
+        }
+        RouterVendor::A10 => {
+            crate::router::a10::A10Backend::new(&cfg, Arc::clone(ssh))
                 .write_config(commands)
                 .await
         }
