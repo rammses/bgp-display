@@ -1,14 +1,15 @@
 // A10 Networks ADC (ACOS) SSH backend.
 //
 // SSH transport is delegated to the shared SshSessionManager.
-// A10 ACOS uses its own CLI (similar to Cisco IOS). BGP is configured
-// under `router bgp <asn>`. The CLI supports `show` commands for BGP
-// similar to Cisco/FRR, so cisco.rs parsers are reused.
+// ACOS does NOT support non-interactive SSH (commands passed as arguments
+// produce no output). All commands go through piped stdin via run_piped().
+// ACOS BGP summary uses a unique "State/PfxRcd/PfxSent" column format
+// with slash-separated values, so a dedicated parser is needed.
 
 #![allow(dead_code)]
 
 use crate::{
-    bgp::{parse_bgp_summary, BgpRoute, BgpSummary},
+    bgp::{parse_a10_bgp_summary, BgpRoute, BgpSummary},
     router::cisco::{
         parse_all_neighbor_details, parse_bgp_table, parse_community_list_entries,
         parse_prefix_list_entries, parse_route_map_entries,
@@ -41,9 +42,11 @@ impl A10Backend {
     }
 
     // ── SSH helper ──────────────────────────────────────────────────────────
+    // ACOS ignores commands passed as SSH arguments — must pipe via stdin.
 
-    async fn run_cmd(&self, cmd: &str) -> Result<String> {
-        let raw = self.ssh.run_cmd(self.config.id, cmd).await?;
+    async fn run_cli(&self, cmd: &str) -> Result<String> {
+        let script = format!("{cmd}\nexit\n");
+        let raw = self.ssh.run_piped(self.config.id, &script).await?;
         Ok(strip_a10_noise(&raw))
     }
 
@@ -51,7 +54,7 @@ impl A10Backend {
 
     pub async fn connect(&mut self) -> Result<()> {
         self.status = ConnectionStatus::Connecting;
-        match self.run_cmd("show version").await {
+        match self.run_cli("show version").await {
             Ok(_) => {
                 self.status = ConnectionStatus::Connected;
                 Ok(())
@@ -73,7 +76,7 @@ impl A10Backend {
     // ── refresh ─────────────────────────────────────────────────────────────
 
     pub async fn refresh(&mut self) -> Result<BgpSummary> {
-        let raw = self.run_cmd("show ip bgp summary").await?;
+        let raw = self.run_cli("show ip bgp summary").await?;
 
         if !raw.contains("BGP router identifier") {
             bail!(
@@ -82,12 +85,12 @@ impl A10Backend {
             );
         }
 
-        let mut summary = parse_bgp_summary(&raw);
+        let mut summary = parse_a10_bgp_summary(&raw);
         self.status = ConnectionStatus::Connected;
 
         let mut detail_map = {
             let mut map = HashMap::new();
-            if let Ok(out) = self.run_cmd("show ip bgp neighbors").await {
+            if let Ok(out) = self.run_cli("show ip bgp neighbors").await {
                 if out.contains("BGP neighbor is") {
                     map = parse_all_neighbor_details(&out);
                 }
@@ -119,7 +122,7 @@ impl A10Backend {
     // ── get_routes ──────────────────────────────────────────────────────────
 
     pub async fn get_routes(&mut self) -> Result<Vec<BgpRoute>> {
-        let raw = self.run_cmd("show ip bgp").await?;
+        let raw = self.run_cli("show ip bgp").await?;
         Ok(parse_bgp_table(&raw))
     }
 
@@ -139,7 +142,7 @@ impl A10Backend {
                 format!("show ip bgp neighbors {ip} advertised-routes")
             }
         };
-        let raw = self.run_cmd(&cmd).await?;
+        let raw = self.run_cli(&cmd).await?;
         Ok(parse_bgp_table(&raw))
     }
 
@@ -148,7 +151,7 @@ impl A10Backend {
     pub async fn ping_mtu(&self, target: IpAddr) -> Result<u16> {
         for payload in [1472u16, 1402, 548] {
             let cmd = format!("ping {target} size {payload} df-bit repeat 3");
-            let out = self.run_cmd(&cmd).await.unwrap_or_default();
+            let out = self.run_cli(&cmd).await.unwrap_or_default();
             if out.contains("!") && !out.contains("....") {
                 return Ok(payload + 28);
             }
@@ -164,7 +167,7 @@ impl A10Backend {
             script.push_str(cmd);
             script.push('\n');
         }
-        script.push_str("end\nwrite memory\n");
+        script.push_str("end\nwrite memory\nexit\n");
 
         let raw = self
             .ssh
@@ -192,7 +195,7 @@ impl A10Backend {
         use crate::bgp::{PrefixListEntry, RouteMapDetail};
 
         let cmd = format!("show route-map {rm_name}");
-        let raw = self.run_cmd(&cmd).await?;
+        let raw = self.run_cli(&cmd).await?;
         let entries = parse_route_map_entries(&raw);
 
         let mut plist_names: Vec<String> = vec![];
@@ -219,7 +222,7 @@ impl A10Backend {
             .map(|name| {
                 let cmd2 = format!("show ip prefix-list {name}");
                 let name = name.clone();
-                async move { (name, self.run_cmd(&cmd2).await) }
+                async move { (name, self.run_cli(&cmd2).await) }
             })
             .collect();
 
@@ -228,7 +231,7 @@ impl A10Backend {
             .map(|name| {
                 let cmd3 = format!("show ip community-list {name}");
                 let name = name.clone();
-                async move { (name, self.run_cmd(&cmd3).await) }
+                async move { (name, self.run_cli(&cmd3).await) }
             })
             .collect();
 
@@ -269,11 +272,20 @@ fn strip_a10_noise(raw: &str) -> String {
             if t.is_empty() {
                 return false;
             }
-            // Filter ACOS prompts and banners
-            if t.ends_with('#') && !t.contains(' ') && t.len() < 60 {
+            // Filter ACOS prompts: "hostname#", "hostname(config)#", "hostname>"
+            if t.ends_with('#') && t.len() < 80 {
                 return false;
             }
-            if t.ends_with(">") && !t.contains(' ') && t.len() < 60 {
+            if t.ends_with('>') && !t.contains(' ') && t.len() < 60 {
+                return false;
+            }
+            // Filter echoed commands from piped stdin
+            if t.starts_with("show ")
+                || t == "exit"
+                || t == "configure"
+                || t == "end"
+                || t == "write memory"
+            {
                 return false;
             }
             if t.starts_with("Last login:") || t.starts_with("Welcome to") {

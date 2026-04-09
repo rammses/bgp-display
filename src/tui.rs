@@ -33,7 +33,8 @@ pub async fn run_tui(app: &mut App) -> Result<()> {
     app.set_event_tx(events.sender());
 
     // ── SSH session manager ─────────────────────────────────────────────────
-    let ssh = SshSessionManager::new(&app.all_routers);
+    // Only warm connections for the routers visible in the active project.
+    let ssh = SshSessionManager::new(&app.routers);
 
     // Pre-warm all SSH connections in the background
     let ssh_warm = Arc::clone(&ssh);

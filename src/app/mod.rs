@@ -235,11 +235,31 @@ pub struct App {
 
 impl App {
     pub fn new(cfg: AppConfig, router_db: RouterDb) -> Self {
-        let n = cfg.routers.len();
+        // Filter visible routers by selected project, if any
+        let visible: Vec<RouterConfig> = match cfg.selected_project {
+            Some(pid) => {
+                let ids = cfg
+                    .projects
+                    .iter()
+                    .find(|p| p.id == pid)
+                    .map(|p| &p.router_ids[..]);
+                match ids {
+                    Some(ids) => cfg
+                        .routers
+                        .iter()
+                        .filter(|r| ids.contains(&r.id))
+                        .cloned()
+                        .collect(),
+                    None => cfg.routers.clone(),
+                }
+            }
+            None => cfg.routers.clone(),
+        };
+        let n = visible.len();
         let mut app = Self {
             current_tab: ActiveTab::Dashboard,
             should_quit: false,
-            routers: cfg.routers.clone(),
+            routers: visible,
             router_list_state: ListState::default(),
             backends: HashMap::new(),
             router_status: HashMap::new(),
@@ -301,7 +321,7 @@ impl App {
             has_pending_update: false,
             all_routers: cfg.routers,
             projects: cfg.projects,
-            active_project: None,
+            active_project: cfg.selected_project,
             project_list_state: ListState::default(),
             project_popup: false,
             project_editor_mode: ProjectEditorMode::Browse,

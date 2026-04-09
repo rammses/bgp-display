@@ -13,6 +13,7 @@ use anyhow::Result;
 pub struct AppConfig {
     pub routers: Vec<RouterConfig>,
     pub projects: Vec<Project>,
+    pub selected_project: Option<uuid::Uuid>,
 }
 
 impl AppConfig {
@@ -22,6 +23,13 @@ impl AppConfig {
         let db = RouterDb::open(passphrase)?;
         let routers = db.load_all()?;
         let projects = db.load_projects()?;
-        Ok((Self { routers, projects }, db))
+        Ok((
+            Self {
+                routers,
+                projects,
+                selected_project: None,
+            },
+            db,
+        ))
     }
 }

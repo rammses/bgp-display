@@ -185,7 +185,7 @@ impl App {
         }
     }
 
-    fn db_upsert_project(&self, p: &Project) {
+    pub(crate) fn db_upsert_project(&self, p: &Project) {
         if let Some(db) = self.router_db.as_ref() {
             if let Err(e) = db.upsert_project(p) {
                 eprintln!("warn: db upsert_project failed for '{}': {e}", p.name);

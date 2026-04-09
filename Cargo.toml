@@ -1,8 +1,8 @@
 [package]
 name        = "bgp-link-manager"
-version     = "0.2.0"
+version     = "0.3.0"
 edition     = "2021"
-description = "TUI-based BGP configuration and state manager (Cisco IOS/IOS-XE; Juniper & FortiGate planned)"
+description = "TUI-based BGP session manager — Cisco, VyOS, Citrix VPX, pfSense, FortiGate, A10 Networks ADC"
 
 [[bin]]
 name = "bgp-link-manager"

@@ -241,10 +241,14 @@ pub(crate) fn parse_bgp_table(output: &str) -> Vec<BgpRoute> {
         };
 
         let as_path_end = remaining.len().saturating_sub(1);
-        let as_path: Vec<u32> = remaining[idx..as_path_end]
-            .iter()
-            .filter_map(|s| s.parse().ok())
-            .collect();
+        let as_path: Vec<u32> = if idx < as_path_end {
+            remaining[idx..as_path_end]
+                .iter()
+                .filter_map(|s| s.parse().ok())
+                .collect()
+        } else {
+            vec![]
+        };
 
         routes.push(BgpRoute {
             status,
