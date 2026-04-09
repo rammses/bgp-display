@@ -1,6 +1,6 @@
 # bgp-link-manager — Agent Instructions
 
-Rust TUI application for managing BGP sessions across Cisco, VyOS, Citrix VPX, pfSense, and FortiGate routers. Built with ratatui, crossterm, tokio, and rusqlite (AES-256-GCM encrypted).
+Rust TUI application for managing BGP sessions across Cisco, VyOS, Citrix VPX, pfSense, FortiGate, and A10 Networks ADC routers. Built with ratatui, crossterm, tokio, and rusqlite (AES-256-GCM encrypted).
 
 ## Specialized Agents
 
@@ -44,6 +44,7 @@ Rust TUI application for managing BGP sessions across Cisco, VyOS, Citrix VPX, p
 - `src/bgp/mod.rs` — all BGP types and parsers shared across vendor backends.
 - `src/router/mod.rs` — RouterConfig, vendor dispatch, SSH mux constants.
 - `src/router/fortigate.rs` — FortiGateBackend with piped stdin and VDOM support.
+- `src/router/a10.rs` — A10Backend with direct shell commands and piped config mode.
 - `src/db.rs` — encrypted SQLite persistence layer.
 - `.cursor/rules/bgp-link-manager-context.md` — compact architecture summary (read this first).
 

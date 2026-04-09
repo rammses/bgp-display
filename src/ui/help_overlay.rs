@@ -93,9 +93,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         .border_style(Style::default().fg(C_SELECTED))
         .title(Span::styled(
             " Keyboard Shortcuts (press any key to close) ",
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
         ));
 
     let para = Paragraph::new(lines)
@@ -108,9 +106,7 @@ fn key_line<'a>(key: &'a str, desc: &'a str) -> Line<'a> {
     Line::from(vec![
         Span::styled(
             format!("  {key:<20}"),
-            Style::default()
-                .fg(C_SELECTED)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
         ),
         Span::styled(desc, Style::default().fg(C_DIM)),
     ])

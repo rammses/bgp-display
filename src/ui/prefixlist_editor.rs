@@ -40,7 +40,11 @@ fn draw_entries(f: &mut Frame, app: &App, area: Rect) {
                 Constraint::Length(3),
             ]
         } else {
-            vec![Constraint::Min(0), Constraint::Length(0), Constraint::Length(3)]
+            vec![
+                Constraint::Min(0),
+                Constraint::Length(0),
+                Constraint::Length(3),
+            ]
         })
         .split(area);
 

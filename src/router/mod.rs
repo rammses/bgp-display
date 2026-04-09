@@ -2,7 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use uuid::Uuid;
 
+pub mod a10;
 pub mod cisco;
+pub mod cisco_parsers;
 pub mod citrix;
 pub mod commands;
 pub mod fortigate;
@@ -79,6 +81,7 @@ pub enum RouterVendor {
     CitrixVpx,
     PfSense,
     FortiGate,
+    A10,
 }
 
 impl std::fmt::Display for RouterVendor {
@@ -89,6 +92,7 @@ impl std::fmt::Display for RouterVendor {
             RouterVendor::CitrixVpx => write!(f, "CitrixVpx"),
             RouterVendor::PfSense => write!(f, "PfSense"),
             RouterVendor::FortiGate => write!(f, "FortiGate"),
+            RouterVendor::A10 => write!(f, "A10"),
         }
     }
 }

@@ -195,7 +195,7 @@ fn format_rtt_span(stats: Option<&PingStats>) -> Span<'static> {
             Span::styled(format!("{ms:>6.1}ms"), Style::default().fg(color))
         }
         None => {
-            if stats.map_or(true, |s| s.history.is_empty()) {
+            if stats.is_none_or(|s| s.history.is_empty()) {
                 Span::styled("   ---  ", Style::default().fg(C_DIM))
             } else {
                 Span::styled(" timeout", Style::default().fg(C_ERROR))
@@ -261,11 +261,9 @@ fn build_sparkline_line(stats: Option<&PingStats>) -> Line<'static> {
         spans.push(Span::styled(ch.to_string(), style));
     }
 
-    if let (Some(min), Some(avg), Some(max)) = (
-        stats.min_rtt_ms(),
-        stats.avg_rtt_ms(),
-        stats.max_rtt_ms(),
-    ) {
+    if let (Some(min), Some(avg), Some(max)) =
+        (stats.min_rtt_ms(), stats.avg_rtt_ms(), stats.max_rtt_ms())
+    {
         spans.push(Span::styled(
             format!("  min:{min:.0} avg:{avg:.0} max:{max:.0}ms"),
             Style::default().fg(C_DIM),
