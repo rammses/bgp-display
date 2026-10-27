@@ -33,15 +33,15 @@ brew install rammses/tap/bgp-link-manager
 
 ### Download binary
 
-Pre-built binaries for macOS (ARM + Intel), Linux (ARM + x64), and Windows x64 are available on the [Releases](https://github.com/rammses/dyd-bgp/releases) page.
+Pre-built binaries for macOS (ARM + Intel), Linux (ARM + x64), and Windows x64 are available on the [Releases](https://github.com/rammses/bgp-display/releases) page.
 
 ### Build from source
 
 **Prerequisites:** Rust 1.75+, OpenSSH client on `$PATH`, a 256-colour terminal.
 
 ```bash
-git clone https://github.com/rammses/dyd-bgp.git
-cd dyd-bgp
+git clone https://github.com/rammses/bgp-display.git
+cd bgp-display
 cargo build --release
 # binary: target/release/bgp-link-manager
 ```
@@ -180,8 +180,8 @@ src/
 Contributions welcome — bug fixes, new vendor backends, parser improvements.
 
 ```bash
-git clone https://github.com/rammses/dyd-bgp.git
-cd dyd-bgp
+git clone https://github.com/rammses/bgp-display.git
+cd bgp-display
 cargo build && cargo clippy -- -D warnings
 ```
 
