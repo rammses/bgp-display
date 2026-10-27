@@ -16,7 +16,7 @@ impl App {
             .and_then(|i| self.peer_indices.get(i))
             .and_then(|&idx| self.current_peers.get(idx))
         {
-            Some(p) => p.neighbor_ip,
+            Some(p) => p.neighbor_ip.clone(),
             None => return,
         };
 
@@ -42,7 +42,7 @@ impl App {
             (
                 crate::router::commands::shutdown_neighbor_commands(
                     &router.vendor,
-                    peer_ip,
+                    &peer_ip,
                     local_as,
                 ),
                 format!("Shutdown neighbor {peer_ip}"),
@@ -51,7 +51,7 @@ impl App {
             (
                 crate::router::commands::no_shutdown_neighbor_commands(
                     &router.vendor,
-                    peer_ip,
+                    &peer_ip,
                     local_as,
                 ),
                 format!("No-shutdown neighbor {peer_ip}"),
@@ -80,7 +80,7 @@ impl App {
             .and_then(|i| self.peer_indices.get(i))
             .and_then(|&idx| self.current_peers.get(idx))
         {
-            Some(p) => p.neighbor_ip,
+            Some(p) => p.neighbor_ip.clone(),
             None => return,
         };
 
@@ -90,7 +90,7 @@ impl App {
             .and_then(|neighbors| {
                 neighbors
                     .iter()
-                    .find(|d| d.neighbor_ip.trim() == peer_ip.to_string())
+                    .find(|d| d.neighbor_ip.trim() == peer_ip)
                     .cloned()
             });
 
@@ -150,11 +150,20 @@ impl App {
             .or(target_router.local_as)
             .unwrap_or(0);
 
+        if let Err(error) = draft.validate_for_vendor(&target_router.vendor) {
+            self.set_status(format!("Clone failed: {error}"));
+            return;
+        }
+
         let commands = crate::router::commands::create_neighbor_commands(
             &target_router.vendor,
             &draft,
             local_as,
         );
+        if commands.is_empty() {
+            self.set_status("Clone failed: no commands generated for this vendor");
+            return;
+        }
 
         let desc = format!(
             "Clone neighbor {} to {}",
@@ -162,16 +171,12 @@ impl App {
         );
 
         let ip_str = draft.neighbor_ip.clone();
-        let rollback_cmds = if let Ok(ip) = ip_str.trim().parse::<IpAddr>() {
-            crate::router::commands::delete_neighbor_commands(
-                &target_router.vendor,
-                ip,
-                local_as,
-                &draft.description,
-            )
-        } else {
-            vec![]
-        };
+        let rollback_cmds = crate::router::commands::delete_neighbor_commands(
+            &target_router.vendor,
+            &ip_str,
+            local_as,
+            &draft.description,
+        );
 
         if let Some(db) = &self.router_db {
             let _ = db.insert_config_history(
@@ -207,17 +212,17 @@ impl App {
             .and_then(|i| self.peer_indices.get(i))
             .and_then(|&idx| self.current_peers.get(idx))
         {
-            Some(p) => p.neighbor_ip,
+            Some(p) => p.neighbor_ip.clone(),
             None => return,
         };
         self.peer_route_view = Some(PeerRouteView {
-            peer_ip: ip,
+            peer_ip: ip.clone(),
             direction: dir,
             routes: None,
             error: None,
         });
         self.peer_route_table_state = TableState::default();
-        self.request_peer_routes_fetch(ip, dir);
+        self.request_peer_routes_fetch(ip.clone(), dir);
         self.set_status(format!("Fetching {} routes for {}…", dir.label(), ip));
     }
 
@@ -233,18 +238,18 @@ impl App {
                 view.direction = view.direction.toggle();
                 view.routes = None;
                 view.error = None;
-                (view.peer_ip, view.direction)
+                (view.peer_ip.clone(), view.direction)
             }
             None => return,
         };
         self.peer_route_table_state = TableState::default();
-        self.request_peer_routes_fetch(ip, dir);
+        self.request_peer_routes_fetch(ip.clone(), dir);
         self.set_status(format!("Fetching {} routes for {}…", dir.label(), ip));
     }
 
     pub(crate) fn request_peer_routes_fetch(
         &self,
-        ip: IpAddr,
+        ip: String,
         dir: crate::bgp::PeerRouteDirection,
     ) {
         let Some(router) = self.selected_router() else {
@@ -261,7 +266,7 @@ impl App {
     pub fn handle_peer_routes(
         &mut self,
         _id: Uuid,
-        ip: IpAddr,
+        ip: String,
         dir: crate::bgp::PeerRouteDirection,
         routes: Vec<BgpRoute>,
     ) {
@@ -291,7 +296,7 @@ impl App {
     pub fn handle_peer_routes_error(
         &mut self,
         _id: Uuid,
-        ip: IpAddr,
+        ip: String,
         dir: crate::bgp::PeerRouteDirection,
         err: String,
     ) {
@@ -330,7 +335,11 @@ impl App {
         } else {
             MtuProbeState::Failed("all probes failed".into())
         };
-        if let Some(peer) = self.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
+        if let Some(peer) = self
+            .current_peers
+            .iter_mut()
+            .find(|p| p.neighbor_ip == ip.to_string())
+        {
             peer.mtu_probe = Some(state.clone());
         }
         let msg = match &state {
@@ -344,7 +353,11 @@ impl App {
 
     /// Called when a path-MTU probe SSH call fails entirely.
     pub fn handle_mtu_probe_error(&mut self, _id: Uuid, ip: IpAddr, err: String) {
-        if let Some(peer) = self.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
+        if let Some(peer) = self
+            .current_peers
+            .iter_mut()
+            .find(|p| p.neighbor_ip == ip.to_string())
+        {
             peer.mtu_probe = Some(crate::bgp::MtuProbeState::Failed(err.clone()));
         }
         tracing::warn!(target = %ip, error = %err, "MTU probe failed");

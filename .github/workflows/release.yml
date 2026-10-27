@@ -100,11 +100,11 @@ jobs:
 
       - name: Download macOS and Linux tarballs
         run: |
-          BASE="https://github.com/rammses/bgp-display/releases/download/${GITHUB_REF_NAME}"
-          curl -sLO "${BASE}/bgp-link-manager-aarch64-apple-darwin.tar.gz"
-          curl -sLO "${BASE}/bgp-link-manager-x86_64-apple-darwin.tar.gz"
-          curl -sLO "${BASE}/bgp-link-manager-aarch64-linux-gnu.tar.gz"
-          curl -sLO "${BASE}/bgp-link-manager-x86_64-linux-gnu.tar.gz"
+          BASE="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+          curl -fsSLO "${BASE}/bgp-link-manager-aarch64-apple-darwin.tar.gz"
+          curl -fsSLO "${BASE}/bgp-link-manager-x86_64-apple-darwin.tar.gz"
+          curl -fsSLO "${BASE}/bgp-link-manager-aarch64-linux-gnu.tar.gz"
+          curl -fsSLO "${BASE}/bgp-link-manager-x86_64-linux-gnu.tar.gz"
 
       - name: Compute SHA256 checksums
         id: sha
@@ -121,27 +121,27 @@ jobs:
           cat > bgp-link-manager.rb << FORMULA
           class BgpLinkManager < Formula
             desc "TUI-based BGP configuration and state manager for multi-vendor routers"
-            homepage "https://github.com/rammses/bgp-display"
+            homepage "https://github.com/${GITHUB_REPOSITORY}"
             version "${VERSION}"
 
             on_macos do
               on_arm do
-                url "https://github.com/rammses/bgp-display/releases/download/${TAG}/bgp-link-manager-aarch64-apple-darwin.tar.gz"
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/bgp-link-manager-aarch64-apple-darwin.tar.gz"
                 sha256 "${{ steps.sha.outputs.macos_arm }}"
               end
               on_intel do
-                url "https://github.com/rammses/bgp-display/releases/download/${TAG}/bgp-link-manager-x86_64-apple-darwin.tar.gz"
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/bgp-link-manager-x86_64-apple-darwin.tar.gz"
                 sha256 "${{ steps.sha.outputs.macos_intel }}"
               end
             end
 
             on_linux do
               on_arm do
-                url "https://github.com/rammses/bgp-display/releases/download/${TAG}/bgp-link-manager-aarch64-linux-gnu.tar.gz"
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/bgp-link-manager-aarch64-linux-gnu.tar.gz"
                 sha256 "${{ steps.sha.outputs.linux_arm }}"
               end
               on_intel do
-                url "https://github.com/rammses/bgp-display/releases/download/${TAG}/bgp-link-manager-x86_64-linux-gnu.tar.gz"
+                url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/bgp-link-manager-x86_64-linux-gnu.tar.gz"
                 sha256 "${{ steps.sha.outputs.linux_intel }}"
               end
             end

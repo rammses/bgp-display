@@ -7,6 +7,7 @@ pub mod cisco;
 pub mod cisco_parsers;
 pub mod citrix;
 pub mod commands;
+pub mod cumulus;
 pub mod fortigate;
 pub mod pfsense;
 pub mod vyos;
@@ -78,6 +79,7 @@ pub fn is_ssh_mux_error(err: &anyhow::Error) -> bool {
 pub enum RouterVendor {
     Cisco,
     VyOs,
+    Cumulus,
     CitrixVpx,
     PfSense,
     FortiGate,
@@ -89,6 +91,7 @@ impl std::fmt::Display for RouterVendor {
         match self {
             RouterVendor::Cisco => write!(f, "Cisco"),
             RouterVendor::VyOs => write!(f, "VyOs"),
+            RouterVendor::Cumulus => write!(f, "Cumulus"),
             RouterVendor::CitrixVpx => write!(f, "CitrixVpx"),
             RouterVendor::PfSense => write!(f, "PfSense"),
             RouterVendor::FortiGate => write!(f, "FortiGate"),
@@ -180,6 +183,7 @@ impl std::fmt::Display for ConnectionStatus {
 pub enum RouterBackend {
     Cisco(cisco::CiscoBackend),
     VyOs(vyos::VyOsBackend),
+    Cumulus(cumulus::CumulusBackend),
     CitrixVpx(citrix::CitrixVpxBackend),
     PfSense(pfsense::PfSenseBackend),
 }
@@ -190,6 +194,7 @@ impl RouterBackend {
         match self {
             RouterBackend::Cisco(b) => b.status(),
             RouterBackend::VyOs(b) => b.status(),
+            RouterBackend::Cumulus(b) => b.status(),
             RouterBackend::CitrixVpx(b) => b.status(),
             RouterBackend::PfSense(b) => b.status(),
         }
@@ -199,6 +204,7 @@ impl RouterBackend {
         match self {
             RouterBackend::Cisco(b) => b.connect().await,
             RouterBackend::VyOs(b) => b.connect().await,
+            RouterBackend::Cumulus(b) => b.connect().await,
             RouterBackend::CitrixVpx(b) => b.connect().await,
             RouterBackend::PfSense(b) => b.connect().await,
         }
@@ -208,6 +214,7 @@ impl RouterBackend {
         match self {
             RouterBackend::Cisco(b) => b.disconnect().await,
             RouterBackend::VyOs(b) => b.disconnect().await,
+            RouterBackend::Cumulus(b) => b.disconnect().await,
             RouterBackend::CitrixVpx(b) => b.disconnect().await,
             RouterBackend::PfSense(b) => b.disconnect().await,
         }
@@ -217,6 +224,7 @@ impl RouterBackend {
         match self {
             RouterBackend::Cisco(b) => b.refresh().await,
             RouterBackend::VyOs(b) => b.refresh().await,
+            RouterBackend::Cumulus(b) => b.refresh().await,
             RouterBackend::CitrixVpx(b) => b.refresh().await,
             RouterBackend::PfSense(b) => b.refresh().await,
         }
@@ -226,6 +234,7 @@ impl RouterBackend {
         match self {
             RouterBackend::Cisco(b) => b.get_routes().await,
             RouterBackend::VyOs(b) => b.get_routes().await,
+            RouterBackend::Cumulus(b) => b.get_routes().await,
             RouterBackend::CitrixVpx(b) => b.get_routes().await,
             RouterBackend::PfSense(b) => b.get_routes().await,
         }
@@ -235,6 +244,7 @@ impl RouterBackend {
         match self {
             RouterBackend::Cisco(b) => b.apply_config(config).await,
             RouterBackend::VyOs(b) => b.apply_config(config).await,
+            RouterBackend::Cumulus(b) => b.apply_config(config).await,
             RouterBackend::CitrixVpx(b) => b.apply_config(config).await,
             RouterBackend::PfSense(b) => b.apply_config(config).await,
         }

@@ -1,9 +1,19 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::Utc;
 use rusqlite::params;
 use uuid::Uuid;
 
+use super::crypto::{decrypt, encrypt};
 use super::RouterDb;
+
+fn decode_commands(key: &[u8; 32], value: &str) -> Result<Vec<String>> {
+    let json = if let Some(ciphertext) = value.strip_prefix("enc:") {
+        decrypt(key, ciphertext).context("decrypting config history")?
+    } else {
+        value.to_string()
+    };
+    serde_json::from_str(&json).context("parsing config history commands")
+}
 
 #[derive(Debug, Clone)]
 pub struct ConfigHistoryEntry {
@@ -28,8 +38,14 @@ impl RouterDb {
     ) -> Result<Uuid> {
         let id = Uuid::new_v4();
         let now = Utc::now().to_rfc3339();
-        let cmd_json = serde_json::to_string(commands).unwrap_or_else(|_| "[]".into());
-        let rb_json = serde_json::to_string(rollback).unwrap_or_else(|_| "[]".into());
+        let cmd_json = format!(
+            "enc:{}",
+            encrypt(&self.key, &serde_json::to_string(commands)?)?
+        );
+        let rb_json = format!(
+            "enc:{}",
+            encrypt(&self.key, &serde_json::to_string(rollback)?)?
+        );
 
         self.conn.execute(
             "INSERT INTO config_history (id, router_id, action, description, commands, rollback, applied_at)
@@ -73,8 +89,8 @@ impl RouterDb {
                 router_id,
                 action,
                 description: desc,
-                commands: serde_json::from_str(&cmd_json).unwrap_or_default(),
-                rollback: serde_json::from_str(&rb_json).unwrap_or_default(),
+                commands: decode_commands(&self.key, &cmd_json)?,
+                rollback: decode_commands(&self.key, &rb_json)?,
                 applied_at: applied,
             });
         }
@@ -101,16 +117,47 @@ impl RouterDb {
             })
             .ok();
 
-        Ok(result.map(
-            |(rid_s, action, desc, cmd_json, rb_json, applied)| ConfigHistoryEntry {
-                id,
-                router_id: rid_s.parse().unwrap_or_else(|_| Uuid::new_v4()),
-                action,
-                description: desc,
-                commands: serde_json::from_str(&cmd_json).unwrap_or_default(),
-                rollback: serde_json::from_str(&rb_json).unwrap_or_default(),
-                applied_at: applied,
-            },
-        ))
+        result
+            .map(|(rid_s, action, desc, cmd_json, rb_json, applied)| {
+                Ok(ConfigHistoryEntry {
+                    id,
+                    router_id: rid_s.parse().unwrap_or_else(|_| Uuid::new_v4()),
+                    action,
+                    description: desc,
+                    commands: decode_commands(&self.key, &cmd_json)?,
+                    rollback: decode_commands(&self.key, &rb_json)?,
+                    applied_at: applied,
+                })
+            })
+            .transpose()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn history_encrypts_commands_and_can_read_them_back() -> Result<()> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE config_history (
+                id TEXT PRIMARY KEY, router_id TEXT, action TEXT, description TEXT,
+                commands TEXT, rollback TEXT, applied_at TEXT);",
+        )?;
+        let db = RouterDb { conn, key: [7; 32] };
+        let router_id = Uuid::new_v4();
+        let command =
+            "nv set vrf default router bgp neighbor swp51 password 'test-secret'".to_string();
+        db.insert_config_history(router_id, "create", "test", &[command.clone()], &[])?;
+        let raw: String = db
+            .conn
+            .query_row("SELECT commands FROM config_history", [], |row| row.get(0))?;
+        assert!(!raw.contains("test-secret"));
+        assert_eq!(
+            db.load_config_history(router_id)?[0].commands,
+            vec![command]
+        );
+        Ok(())
     }
 }

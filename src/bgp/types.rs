@@ -138,7 +138,8 @@ pub enum MtuProbeState {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BgpPeer {
-    pub neighbor_ip: IpAddr,
+    /// Neighbor address, or interface name for BGP unnumbered.
+    pub neighbor_ip: String,
     pub remote_as: u32,
     pub local_as: u32,
     pub state: BgpState,

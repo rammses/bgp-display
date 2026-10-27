@@ -280,7 +280,7 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
 
     if let Some(p) = peer_for_history {
         if let Some(router) = app.selected_router() {
-            let key = (router.id, p.neighbor_ip);
+            let key = (router.id, p.neighbor_ip.clone());
             if let Some(history) = app.peer_state_history.get(&key) {
                 if !history.is_empty() {
                     lines.push(Line::from(Span::styled(

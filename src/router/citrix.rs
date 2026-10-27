@@ -201,7 +201,12 @@ impl CitrixVpxBackend {
         };
 
         for peer in &mut summary.peers {
-            if let Some(d) = detail_map.remove(&peer.neighbor_ip) {
+            if let Some(d) = peer
+                .neighbor_ip
+                .parse()
+                .ok()
+                .and_then(|ip| detail_map.remove(&ip))
+            {
                 peer.description = d.description;
                 peer.route_map_in = d.route_map_in;
                 peer.route_map_out = d.route_map_out;

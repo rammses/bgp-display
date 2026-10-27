@@ -10,7 +10,6 @@ use crate::{
 };
 use ratatui::widgets::{ListState, TableState};
 use std::collections::{HashMap, VecDeque};
-use std::net::IpAddr;
 use tokio::sync::mpsc;
 use uuid::Uuid;
 
@@ -226,7 +225,7 @@ pub struct App {
     // Peer state transition history: (router_id, peer_ip) → deque of (timestamp, old_state, new_state)
     #[allow(clippy::type_complexity)]
     pub peer_state_history:
-        HashMap<(Uuid, IpAddr), VecDeque<(chrono::DateTime<chrono::Utc>, String, String)>>,
+        HashMap<(Uuid, String), VecDeque<(chrono::DateTime<chrono::Utc>, String, String)>>,
 
     // Clone neighbor to another router
     pub clone_target_router: Option<usize>,
@@ -526,6 +525,7 @@ impl App {
             }
             let vendor = match er.vendor.to_lowercase().as_str() {
                 "vyos" => RouterVendor::VyOs,
+                "cumulus" => RouterVendor::Cumulus,
                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
                 "pfsense" => RouterVendor::PfSense,
                 "fortigate" => RouterVendor::FortiGate,

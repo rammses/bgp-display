@@ -93,12 +93,13 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
             KeyCode::Tab => app.editor_commit_and_advance(),
             KeyCode::Enter => app.editor_commit_and_advance(),
             KeyCode::BackTab => app.editor_commit_and_retreat(),
-            // Vendor field (5): Space cycles Cisco ↔ VyOs; other chars are ignored
+            // Vendor field (5): Space cycles through supported vendors.
             KeyCode::Char(' ') if app.editor_field == 5 => {
                 if let Some(draft) = app.editor_draft.as_mut() {
                     draft.vendor = match draft.vendor {
                         RouterVendor::Cisco => RouterVendor::VyOs,
-                        RouterVendor::VyOs => RouterVendor::CitrixVpx,
+                        RouterVendor::VyOs => RouterVendor::Cumulus,
+                        RouterVendor::Cumulus => RouterVendor::CitrixVpx,
                         RouterVendor::CitrixVpx => RouterVendor::PfSense,
                         RouterVendor::PfSense => RouterVendor::FortiGate,
                         RouterVendor::FortiGate => RouterVendor::A10,
@@ -374,11 +375,11 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     Some(view) => {
                         view.routes = None;
                         view.error = None;
-                        (view.peer_ip, view.direction)
+                        (view.peer_ip.clone(), view.direction)
                     }
                     None => return,
                 };
-                app.request_peer_routes_fetch(ip, dir);
+                app.request_peer_routes_fetch(ip.clone(), dir);
                 app.set_status(format!("Refreshing {} routes for {}…", dir.label(), ip));
             }
             KeyCode::Up | KeyCode::Char('k') => {
@@ -634,13 +635,17 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 .selected()
                 .and_then(|i| app.peer_indices.get(i))
                 .and_then(|&idx| app.current_peers.get(idx))
-                .map(|p| p.neighbor_ip)
+                .map(|p| p.neighbor_ip.clone())
             {
-                if let Some(peer) = app.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
-                    peer.mtu_probe = Some(MtuProbeState::Running);
+                if let Ok(address) = ip.parse() {
+                    if let Some(peer) = app.current_peers.iter_mut().find(|p| p.neighbor_ip == ip) {
+                        peer.mtu_probe = Some(MtuProbeState::Running);
+                    }
+                    app.request_mtu_probe(address);
+                    app.set_status(format!("Running MTU probe to {ip}…"));
+                } else {
+                    app.set_status("MTU probe requires an IP-addressed neighbor");
                 }
-                app.request_mtu_probe(ip);
-                app.set_status(format!("Running MTU probe to {ip}…"));
             }
         }
 
@@ -665,7 +670,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 .selected()
                 .and_then(|i| app.peer_indices.get(i))
                 .and_then(|&idx| app.current_peers.get(idx))
-                .map(|p| p.neighbor_ip)
+                .map(|p| p.neighbor_ip.clone())
             {
                 app.wizard_open_edit(ip);
             }
@@ -678,7 +683,7 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 .selected()
                 .and_then(|i| app.peer_indices.get(i))
                 .and_then(|&idx| app.current_peers.get(idx))
-                .map(|p| p.neighbor_ip)
+                .map(|p| p.neighbor_ip.clone())
             {
                 app.wizard_open_delete(ip);
             }

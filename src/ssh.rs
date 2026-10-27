@@ -365,7 +365,11 @@ impl SshSessionManager {
 
     // ── Piped stdin execution (ssh -T user@host < stdin) ────────────────────
 
-    async fn exec_piped(cfg: &RouterConfig, stdin_data: &str) -> Result<String> {
+    async fn exec_piped(
+        cfg: &RouterConfig,
+        stdin_data: &str,
+        command_timeout: Duration,
+    ) -> Result<String> {
         let (mut cmd, target, port_str, control_path_arg) = Self::exec_cmd_builder(cfg);
 
         let mut args: Vec<&str> = vec![
@@ -409,9 +413,9 @@ impl SshSessionManager {
             drop(stdin);
         }
 
-        let output = tokio::time::timeout(Duration::from_secs(15), child.wait_with_output())
+        let output = tokio::time::timeout(command_timeout, child.wait_with_output())
             .await
-            .map_err(|_| anyhow::anyhow!("SSH timed out connecting to {}", cfg.hostname))??;
+            .map_err(|_| anyhow::anyhow!("SSH piped command timed out on {}", cfg.hostname))??;
         let elapsed_us = start.elapsed().as_micros();
 
         if elapsed_us > thresholds::SSH_WARN_US {
@@ -437,6 +441,17 @@ impl SshSessionManager {
 
     /// Run SSH with piped stdin (for pfSense menu bypass, FortiGate CLI pipeline).
     pub async fn run_piped(&self, router_id: Uuid, stdin_data: &str) -> Result<String> {
+        self.run_piped_with_timeout(router_id, stdin_data, Duration::from_secs(15))
+            .await
+    }
+
+    /// Run SSH with piped stdin, allowing a longer timeout for NVUE applies.
+    pub async fn run_piped_with_timeout(
+        &self,
+        router_id: Uuid,
+        stdin_data: &str,
+        command_timeout: Duration,
+    ) -> Result<String> {
         let cfg = self
             .get_config(router_id)
             .await
@@ -444,11 +459,11 @@ impl SshSessionManager {
 
         tracing::debug!(router = %cfg.name, "run_piped");
 
-        match Self::exec_piped(&cfg, stdin_data).await {
+        match Self::exec_piped(&cfg, stdin_data, command_timeout).await {
             Err(e) if crate::router::is_ssh_mux_error(&e) => {
                 tracing::warn!(router = %cfg.name, "stale mux socket (piped) — cleaning up and retrying");
                 crate::router::cleanup_mux_socket(&cfg.username, &cfg.hostname, cfg.ssh_port).await;
-                Self::exec_piped(&cfg, stdin_data).await
+                Self::exec_piped(&cfg, stdin_data, command_timeout).await
             }
             other => other,
         }

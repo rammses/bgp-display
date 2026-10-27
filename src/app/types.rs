@@ -1,6 +1,5 @@
 use crate::bgp::{BgpPeer, BgpRoute, BgpSummary};
 use std::collections::VecDeque;
-use std::net::IpAddr;
 use uuid::Uuid;
 
 // ─── Editor Mode ──────────────────────────────────────────────────────────────
@@ -45,8 +44,8 @@ pub enum FilterMode {
 pub enum WizardMode {
     Closed,
     NeighborCreate,
-    NeighborEdit(IpAddr),
-    NeighborDelete(IpAddr),
+    NeighborEdit(String),
+    NeighborDelete(String),
     RouteMapEdit(String),
     PrefixListEdit(String),
     CommunityListEdit(String),
@@ -219,7 +218,7 @@ impl PingStats {
 // ─── Per-peer route drill-down state ─────────────────────────────────────────
 
 pub struct PeerRouteView {
-    pub peer_ip: IpAddr,
+    pub peer_ip: String,
     pub direction: crate::bgp::PeerRouteDirection,
     pub routes: Option<Vec<BgpRoute>>,
     pub error: Option<String>,

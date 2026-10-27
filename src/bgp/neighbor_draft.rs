@@ -91,7 +91,7 @@ impl Default for NeighborDraft {
 
 impl NeighborDraft {
     pub const FIELDS: &[&str] = &[
-        "Neighbor IP",
+        "Neighbor IP/if",
         "Remote AS",
         "Description",
         "Update Source",
@@ -110,6 +110,7 @@ impl NeighborDraft {
     ];
 
     pub const NFIELDS: usize = 16;
+    pub const PASSWORD_FIELD: usize = 9;
 
     pub fn field_value(&self, idx: usize) -> String {
         match idx {
@@ -191,9 +192,26 @@ impl NeighborDraft {
         self.remote_as.trim().parse().ok()
     }
 
-    pub fn validate(&self) -> Result<(), String> {
-        if self.parsed_ip().is_none() {
-            return Err("Invalid neighbor IP address (IPv4 or IPv6)".into());
+    pub fn validate_for_vendor(&self, vendor: &crate::router::RouterVendor) -> Result<(), String> {
+        self.validate_with_interface(matches!(vendor, crate::router::RouterVendor::Cumulus))
+    }
+
+    fn validate_with_interface(&self, allow_interface: bool) -> Result<(), String> {
+        let interface = self.neighbor_ip.trim();
+        let valid_interface = allow_interface
+            && !interface.is_empty()
+            && interface.len() <= 15
+            && interface.starts_with(|c: char| c.is_ascii_alphabetic())
+            && interface
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+        if self.parsed_ip().is_none() && !valid_interface {
+            return Err(if allow_interface {
+                "Invalid neighbor IP address or interface name"
+            } else {
+                "Invalid neighbor IP address (IPv4 or IPv6)"
+            }
+            .into());
         }
         if let Some(ip) = self.parsed_ip() {
             let is_v6 = ip.is_ipv6();
@@ -205,6 +223,11 @@ impl NeighborDraft {
             }
         }
         match self.parsed_as() {
+            None if allow_interface
+                && matches!(
+                    self.remote_as.trim().to_ascii_lowercase().as_str(),
+                    "external" | "internal"
+                ) => {}
             None => return Err("Remote AS must be a number".into()),
             Some(0) => return Err("Remote AS cannot be 0".into()),
             _ => {}
@@ -212,12 +235,61 @@ impl NeighborDraft {
         if self.description.trim().is_empty() {
             return Err("Description is required (drives naming convention)".into());
         }
-        let hold: u16 = self.hold_time.trim().parse().unwrap_or(0);
-        let keep: u16 = self.keepalive.trim().parse().unwrap_or(0);
-        if hold > 0 && keep > 0 && hold < keep * 3 {
+        let hold: u16 = self
+            .hold_time
+            .trim()
+            .parse()
+            .map_err(|_| "Invalid hold time")?;
+        let keep: u16 = self
+            .keepalive
+            .trim()
+            .parse()
+            .map_err(|_| "Invalid keepalive")?;
+        if hold > 0 && keep > 0 && u32::from(hold) < u32::from(keep) * 3 {
             return Err("Hold time must be >= 3x keepalive".into());
         }
+        if allow_interface {
+            if self.bfd {
+                return Err("BFD is unavailable for Cumulus 5.x neighbor editing".into());
+            }
+            if !self.default_local_pref.trim().is_empty() {
+                return Err("Set local preference in a Cumulus route map".into());
+            }
+            if !self.maximum_prefix.trim().is_empty()
+                && self.maximum_prefix.trim().parse::<u32>().is_err()
+            {
+                return Err("Invalid maximum prefix count".into());
+            }
+            if !self.weight.trim().is_empty() && self.weight.trim().parse::<u16>().is_err() {
+                return Err("Invalid weight".into());
+            }
+        }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::router::RouterVendor;
+
+    #[test]
+    fn cumulus_accepts_unnumbered_interfaces_but_rejects_shell_syntax() {
+        let mut draft = NeighborDraft {
+            remote_as: "external".into(),
+            description: "SPINE01".into(),
+            ..Default::default()
+        };
+        for neighbor in ["swp51", "peerlink.4094"] {
+            draft.neighbor_ip = neighbor.into();
+            assert!(draft.validate_for_vendor(&RouterVendor::Cumulus).is_ok());
+        }
+        for neighbor in ["swp51;id", "swp51 name", "$(id)", ""] {
+            draft.neighbor_ip = neighbor.into();
+            assert!(draft.validate_for_vendor(&RouterVendor::Cumulus).is_err());
+        }
+        draft.neighbor_ip = "swp51".into();
+        assert!(draft.validate_for_vendor(&RouterVendor::Cisco).is_err());
     }
 }
 

@@ -43,7 +43,7 @@ fn handle_neighbor_wizard_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     .wizard_draft
                     .as_ref()
                     .map(|d| match app.wizard_field {
-                        8 => d.password.clone(),
+                        NeighborDraft::PASSWORD_FIELD => d.password.clone(),
                         f => d.field_value(f),
                     })
                     .unwrap_or_default();
@@ -63,7 +63,7 @@ fn handle_neighbor_wizard_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     .wizard_draft
                     .as_ref()
                     .map(|d| match app.wizard_field {
-                        8 => d.password.clone(),
+                        NeighborDraft::PASSWORD_FIELD => d.password.clone(),
                         f => d.field_value(f),
                     })
                     .unwrap_or_default();
@@ -86,10 +86,8 @@ fn handle_neighbor_wizard_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     app.wizard_buf.pop();
                 }
             }
-            KeyCode::Char(c) => {
-                if !NeighborDraft::is_toggle_field(app.wizard_field) {
-                    app.wizard_buf.push(c);
-                }
+            KeyCode::Char(c) if !NeighborDraft::is_toggle_field(app.wizard_field) => {
+                app.wizard_buf.push(c);
             }
             _ => {}
         },
@@ -100,7 +98,7 @@ fn handle_neighbor_wizard_key(app: &mut App, key: crossterm::event::KeyEvent) {
                     .wizard_draft
                     .as_ref()
                     .map(|d| match app.wizard_field {
-                        8 => d.password.clone(),
+                        NeighborDraft::PASSWORD_FIELD => d.password.clone(),
                         f => d.field_value(f),
                     })
                     .unwrap_or_default();
@@ -527,17 +525,14 @@ fn handle_rm_clause_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 }
             }
         }
-        KeyCode::Char('p') => {
-            if is_match {
-                if let Some(entry) = app.rm_editor_entries.get(app.rm_editor_selected) {
-                    if let Some(clause) = entry.match_clauses.get(app.rm_clause_idx) {
-                        if clause.contains("prefix-list") {
-                            let pl_name =
-                                clause.split_whitespace().last().unwrap_or("").to_string();
-                            if !pl_name.is_empty() {
-                                app.rm_clause_mode = false;
-                                app.open_prefixlist_editor(&pl_name);
-                            }
+        KeyCode::Char('p') if is_match => {
+            if let Some(entry) = app.rm_editor_entries.get(app.rm_editor_selected) {
+                if let Some(clause) = entry.match_clauses.get(app.rm_clause_idx) {
+                    if clause.contains("prefix-list") {
+                        let pl_name = clause.split_whitespace().last().unwrap_or("").to_string();
+                        if !pl_name.is_empty() {
+                            app.rm_clause_mode = false;
+                            app.open_prefixlist_editor(&pl_name);
                         }
                     }
                 }

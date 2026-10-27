@@ -15,7 +15,6 @@ impl RouterDb {
             .created_at
             .map(|t| t.to_rfc3339())
             .unwrap_or_else(|| now.clone());
-        let remote_as: u32 = draft.remote_as.trim().parse().unwrap_or(0);
         let password_enc = if draft.password.is_empty() {
             None
         } else {
@@ -44,7 +43,7 @@ impl RouterDb {
                 id.to_string(),
                 router_id.to_string(),
                 draft.neighbor_ip.trim(),
-                remote_as,
+                draft.remote_as.trim(),
                 draft.description.trim(),
                 if draft.update_source.is_empty() {
                     None
@@ -75,7 +74,7 @@ impl RouterDb {
 
     pub fn load_neighbors(&self, router_id: Uuid) -> Result<Vec<NeighborDraft>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, neighbor_ip, remote_as, description, update_source,
+            "SELECT id, neighbor_ip, CAST(remote_as AS TEXT), description, update_source,
                     next_hop_self, rr_client, hold_time, keepalive,
                     password_enc, bfd, soft_reconfig, created_at, updated_at
              FROM neighbors WHERE router_id = ?1 ORDER BY neighbor_ip",
@@ -85,7 +84,7 @@ impl RouterDb {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
-                row.get::<_, u32>(2)?,
+                row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
                 row.get::<_, Option<String>>(4)?,
                 row.get::<_, i32>(5)?,
@@ -130,7 +129,7 @@ impl RouterDb {
                 id: id_s.parse().ok(),
                 router_id: Some(router_id),
                 neighbor_ip,
-                remote_as: remote_as.to_string(),
+                remote_as,
                 description,
                 update_source: update_source.unwrap_or_default(),
                 next_hop_self: nhs != 0,
@@ -170,5 +169,39 @@ impl RouterDb {
             map.insert(rid, self.load_neighbors(rid)?);
         }
         Ok(map)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unnumbered_neighbor_round_trips_with_external_remote_as() -> Result<()> {
+        let conn = rusqlite::Connection::open_in_memory()?;
+        conn.execute_batch(
+            "CREATE TABLE neighbors (
+                id TEXT PRIMARY KEY, router_id TEXT NOT NULL, neighbor_ip TEXT NOT NULL,
+                remote_as INTEGER NOT NULL, description TEXT NOT NULL, update_source TEXT,
+                next_hop_self INTEGER NOT NULL, rr_client INTEGER NOT NULL,
+                hold_time INTEGER NOT NULL, keepalive INTEGER NOT NULL, password_enc TEXT,
+                bfd INTEGER NOT NULL, soft_reconfig INTEGER NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                UNIQUE(router_id, neighbor_ip));",
+        )?;
+        let db = RouterDb { conn, key: [0; 32] };
+        let router_id = Uuid::new_v4();
+        let draft = NeighborDraft {
+            neighbor_ip: "peerlink.4094".into(),
+            remote_as: "external".into(),
+            description: "MLAG peer".into(),
+            ..Default::default()
+        };
+        db.upsert_neighbor(router_id, &draft)?;
+        let loaded = db.load_neighbors(router_id)?;
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].neighbor_ip, "peerlink.4094");
+        assert_eq!(loaded[0].remote_as, "external");
+        Ok(())
     }
 }

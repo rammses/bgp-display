@@ -3,7 +3,6 @@ use super::App;
 use crate::bgp::{BgpRoute, BgpSummary, CommunityListEntry, PrefixListEntry};
 use crate::events::FetchRequest;
 use crate::router::ConnectionStatus;
-use std::net::IpAddr;
 use uuid::Uuid;
 
 impl App {
@@ -22,7 +21,7 @@ impl App {
 
         // Detect peer state transitions by comparing against cached peers.
         // Collect changes first to avoid borrow conflicts with self.log() etc.
-        let mut state_changes: Vec<(IpAddr, String, String, bool, bool)> = Vec::new();
+        let mut state_changes: Vec<(String, String, String, bool, bool)> = Vec::new();
         if let Some(cached) = self.bgp_cache.get(&id) {
             for new_peer in &summary.peers {
                 if let Some(old_peer) = cached
@@ -36,7 +35,7 @@ impl App {
                         let is_up = old_state != crate::bgp::BgpState::Established
                             && new_state == crate::bgp::BgpState::Established;
                         state_changes.push((
-                            new_peer.neighbor_ip,
+                            new_peer.neighbor_ip.clone(),
                             old_state.to_string(),
                             new_state.to_string(),
                             is_down,
@@ -58,7 +57,7 @@ impl App {
             self.log(&msg);
             self.conn_log(&msg);
 
-            let key = (id, ip);
+            let key = (id, ip.clone());
             let history = self.peer_state_history.entry(key).or_default();
             history.push_back((chrono::Utc::now(), old_s.clone(), new_s.clone()));
             while history.len() > 100 {

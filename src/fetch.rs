@@ -139,6 +139,13 @@ async fn refresh_router(
                     Err(e) => Err(e),
                 }
             }
+            RouterVendor::Cumulus => {
+                let mut b = crate::router::cumulus::CumulusBackend::new(&cfg, Arc::clone(ssh));
+                match b.refresh().await {
+                    Ok(s) => Ok((s, b.get_routes().await.unwrap_or_default())),
+                    Err(e) => Err(e),
+                }
+            }
             RouterVendor::CitrixVpx => {
                 let mut b = crate::router::citrix::CitrixVpxBackend::new(&cfg, Arc::clone(ssh));
                 match b.refresh().await {
@@ -204,7 +211,7 @@ async fn refresh_router(
             // Fetch prefix-list and community-list definitions so they appear
             // on the Config tab and can be edited with 'e'.
             match cfg.vendor {
-                RouterVendor::Cisco | RouterVendor::VyOs => {
+                RouterVendor::Cisco | RouterVendor::VyOs | RouterVendor::Cumulus => {
                     let b = CiscoBackend::new(&cfg, Arc::clone(ssh));
                     let policy = b.fetch_policy_stanza().await;
                     if !policy.text.is_empty() {
@@ -260,6 +267,11 @@ async fn fetch_route_map(
                 .fetch_route_map_detail(rm_name)
                 .await
         }
+        RouterVendor::Cumulus => {
+            crate::router::cumulus::CumulusBackend::new(&cfg, Arc::clone(ssh))
+                .fetch_route_map_detail(rm_name)
+                .await
+        }
         RouterVendor::CitrixVpx => {
             crate::router::citrix::CitrixVpxBackend::new(&cfg, Arc::clone(ssh))
                 .fetch_route_map_detail(rm_name)
@@ -304,7 +316,7 @@ async fn fetch_peer_routes(
     ssh: &Arc<SshSessionManager>,
     tx: &mpsc::UnboundedSender<AppEvent>,
     router_id: Uuid,
-    ip: IpAddr,
+    ip: String,
     dir: PeerRouteDirection,
 ) {
     let cfg = match ssh.get_config(router_id).await {
@@ -315,37 +327,61 @@ async fn fetch_peer_routes(
     let start = Instant::now();
     tracing::debug!(router = %cfg.name, peer = %ip, direction = %dir.label(), "fetching peer routes");
 
+    let address = ip.parse::<IpAddr>();
     let result = match cfg.vendor {
-        RouterVendor::Cisco => {
-            CiscoBackend::new(&cfg, Arc::clone(ssh))
-                .get_peer_routes(ip, dir)
+        RouterVendor::Cisco => match address {
+            Ok(ip) => {
+                CiscoBackend::new(&cfg, Arc::clone(ssh))
+                    .get_peer_routes(ip, dir)
+                    .await
+            }
+            Err(e) => Err(e.into()),
+        },
+        RouterVendor::VyOs => match address {
+            Ok(ip) => {
+                crate::router::vyos::VyOsBackend::new(&cfg, Arc::clone(ssh))
+                    .get_peer_routes(ip, dir)
+                    .await
+            }
+            Err(e) => Err(e.into()),
+        },
+        RouterVendor::Cumulus => {
+            crate::router::cumulus::CumulusBackend::new(&cfg, Arc::clone(ssh))
+                .get_peer_routes(&ip, dir)
                 .await
         }
-        RouterVendor::VyOs => {
-            crate::router::vyos::VyOsBackend::new(&cfg, Arc::clone(ssh))
-                .get_peer_routes(ip, dir)
-                .await
-        }
-        RouterVendor::CitrixVpx => {
-            crate::router::citrix::CitrixVpxBackend::new(&cfg, Arc::clone(ssh))
-                .get_peer_routes(ip, dir)
-                .await
-        }
-        RouterVendor::PfSense => {
-            crate::router::pfsense::PfSenseBackend::new(&cfg, Arc::clone(ssh))
-                .get_peer_routes(ip, dir)
-                .await
-        }
-        RouterVendor::FortiGate => {
-            crate::router::fortigate::FortiGateBackend::new(&cfg, Arc::clone(ssh))
-                .get_peer_routes(ip, dir)
-                .await
-        }
-        RouterVendor::A10 => {
-            crate::router::a10::A10Backend::new(&cfg, Arc::clone(ssh))
-                .get_peer_routes(ip, dir)
-                .await
-        }
+        RouterVendor::CitrixVpx => match address {
+            Ok(ip) => {
+                crate::router::citrix::CitrixVpxBackend::new(&cfg, Arc::clone(ssh))
+                    .get_peer_routes(ip, dir)
+                    .await
+            }
+            Err(e) => Err(e.into()),
+        },
+        RouterVendor::PfSense => match address {
+            Ok(ip) => {
+                crate::router::pfsense::PfSenseBackend::new(&cfg, Arc::clone(ssh))
+                    .get_peer_routes(ip, dir)
+                    .await
+            }
+            Err(e) => Err(e.into()),
+        },
+        RouterVendor::FortiGate => match address {
+            Ok(ip) => {
+                crate::router::fortigate::FortiGateBackend::new(&cfg, Arc::clone(ssh))
+                    .get_peer_routes(ip, dir)
+                    .await
+            }
+            Err(e) => Err(e.into()),
+        },
+        RouterVendor::A10 => match address {
+            Ok(ip) => {
+                crate::router::a10::A10Backend::new(&cfg, Arc::clone(ssh))
+                    .get_peer_routes(ip, dir)
+                    .await
+            }
+            Err(e) => Err(e.into()),
+        },
     };
 
     let elapsed_ms = start.elapsed().as_millis();
@@ -389,6 +425,11 @@ async fn fetch_mtu(
         }
         RouterVendor::VyOs => {
             crate::router::vyos::VyOsBackend::new(&cfg, Arc::clone(ssh))
+                .ping_mtu(target)
+                .await
+        }
+        RouterVendor::Cumulus => {
+            crate::router::cumulus::CumulusBackend::new(&cfg, Arc::clone(ssh))
                 .ping_mtu(target)
                 .await
         }
@@ -466,6 +507,11 @@ async fn apply_config(
         }
         RouterVendor::VyOs => {
             crate::router::vyos::VyOsBackend::new(&cfg, Arc::clone(ssh))
+                .write_config(commands)
+                .await
+        }
+        RouterVendor::Cumulus => {
+            crate::router::cumulus::CumulusBackend::new(&cfg, Arc::clone(ssh))
                 .write_config(commands)
                 .await
         }

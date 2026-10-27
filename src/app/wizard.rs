@@ -3,7 +3,6 @@ use super::App;
 use crate::bgp::NeighborDraft;
 use crate::events::FetchRequest;
 use crate::router::RouterVendor;
-use std::net::IpAddr;
 
 impl App {
     pub fn wizard_open_create(&mut self) {
@@ -17,7 +16,7 @@ impl App {
         self.wizard_result_msg = None;
     }
 
-    pub fn wizard_open_edit(&mut self, peer_ip: IpAddr) {
+    pub fn wizard_open_edit(&mut self, peer_ip: String) {
         let router_id = self.selected_router().map(|r| r.id);
 
         // Prefer the stored desired-state draft (has password etc.)
@@ -25,7 +24,7 @@ impl App {
             self.desired_neighbors.get(&rid).and_then(|neighbors| {
                 neighbors
                     .iter()
-                    .find(|d| d.neighbor_ip.trim() == peer_ip.to_string())
+                    .find(|d| d.neighbor_ip.trim() == peer_ip)
                     .cloned()
             })
         });
@@ -64,14 +63,20 @@ impl App {
         self.wizard_result_msg = None;
     }
 
-    pub fn wizard_open_delete(&mut self, peer_ip: IpAddr) {
-        self.wizard_mode = WizardMode::NeighborDelete(peer_ip);
+    pub fn wizard_open_delete(&mut self, peer_ip: String) {
+        self.wizard_mode = WizardMode::NeighborDelete(peer_ip.clone());
         self.wizard_step = WizardStep::Review;
         self.wizard_error = None;
         self.wizard_result_msg = None;
 
         if let Some(peer) = self.current_peers.iter().find(|p| p.neighbor_ip == peer_ip) {
-            let desc = peer.description.clone().unwrap_or_default();
+            let desc = self
+                .selected_router()
+                .and_then(|router| self.desired_neighbors.get(&router.id))
+                .and_then(|neighbors| neighbors.iter().find(|d| d.neighbor_ip.trim() == peer_ip))
+                .map(|draft| draft.description.clone())
+                .or_else(|| peer.description.clone())
+                .unwrap_or_default();
             let local_as = self
                 .current_summary
                 .as_ref()
@@ -82,7 +87,7 @@ impl App {
                 .map(|r| r.vendor.clone())
                 .unwrap_or(RouterVendor::Cisco);
             self.wizard_preview = crate::router::commands::delete_neighbor_commands(
-                &vendor, peer_ip, local_as, &desc,
+                &vendor, &peer_ip, local_as, &desc,
             );
         }
     }
@@ -126,11 +131,6 @@ impl App {
 
     pub fn wizard_generate_preview(&mut self) {
         if let Some(draft) = &self.wizard_draft {
-            if let Err(e) = draft.validate() {
-                self.wizard_error = Some(e);
-                return;
-            }
-            self.wizard_error = None;
             let local_as = self
                 .current_summary
                 .as_ref()
@@ -140,8 +140,17 @@ impl App {
                 .selected_router()
                 .map(|r| r.vendor.clone())
                 .unwrap_or(RouterVendor::Cisco);
+            if let Err(e) = draft.validate_for_vendor(&vendor) {
+                self.wizard_error = Some(e);
+                return;
+            }
+            self.wizard_error = None;
             self.wizard_preview =
                 crate::router::commands::create_neighbor_commands(&vendor, draft, local_as);
+            if self.wizard_preview.is_empty() {
+                self.wizard_error = Some("No commands generated for this neighbor".into());
+                return;
+            }
 
             self.wizard_diff.clear();
             if let WizardMode::NeighborEdit(ip) = &self.wizard_mode {
@@ -150,7 +159,7 @@ impl App {
                     self.desired_neighbors.get(&rid).and_then(|neighbors| {
                         neighbors
                             .iter()
-                            .find(|d| d.neighbor_ip.trim() == ip.to_string())
+                            .find(|d| d.neighbor_ip.trim() == ip)
                             .cloned()
                     })
                 });
@@ -197,18 +206,14 @@ impl App {
                     .as_ref()
                     .map(|d| d.description.clone())
                     .unwrap_or_default();
-                let ip_str = self
+                let peer_id = self
                     .wizard_draft
                     .as_ref()
-                    .and_then(|d| d.parsed_ip())
-                    .map(|ip| ip.to_string())
+                    .map(|d| d.neighbor_ip.trim().to_string())
                     .unwrap_or_default();
-                let rb = if !ip_str.is_empty() {
+                let rb = if !peer_id.is_empty() {
                     crate::router::commands::delete_neighbor_commands(
-                        &vendor,
-                        ip_str.parse().unwrap(),
-                        local_as,
-                        &desc,
+                        &vendor, &peer_id, local_as, &desc,
                     )
                 } else {
                     vec![]
@@ -220,11 +225,7 @@ impl App {
                 let rb = self
                     .desired_neighbors
                     .get(&router_id)
-                    .and_then(|neighbors| {
-                        neighbors
-                            .iter()
-                            .find(|d| d.neighbor_ip.trim() == ip.to_string())
-                    })
+                    .and_then(|neighbors| neighbors.iter().find(|d| d.neighbor_ip.trim() == ip))
                     .map(|old_draft| {
                         crate::router::commands::create_neighbor_commands(
                             &vendor, old_draft, local_as,
@@ -238,11 +239,7 @@ impl App {
                 let rb = self
                     .desired_neighbors
                     .get(&router_id)
-                    .and_then(|neighbors| {
-                        neighbors
-                            .iter()
-                            .find(|d| d.neighbor_ip.trim() == ip.to_string())
-                    })
+                    .and_then(|neighbors| neighbors.iter().find(|d| d.neighbor_ip.trim() == ip))
                     .map(|old_draft| {
                         crate::router::commands::create_neighbor_commands(
                             &vendor, old_draft, local_as,

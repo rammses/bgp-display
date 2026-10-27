@@ -291,7 +291,7 @@ fn parse_status_flags(chars: &[char]) -> (RouteStatus, usize) {
 
 fn looks_like_prefix(s: &str) -> bool {
     let base = s.split('/').next().unwrap_or("");
-    base.split('.').count() == 4 && base.split('.').all(|o| o.parse::<u8>().is_ok())
+    base.parse::<IpAddr>().is_ok()
 }
 
 // ─── Route-map / prefix-list / community-list parsers ─────────────────────────

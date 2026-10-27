@@ -39,7 +39,7 @@ pub fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
         Some(v) => v,
         None => return,
     };
-    let peer_ip = view.peer_ip;
+    let peer_ip = view.peer_ip.clone();
     let dir = view.direction;
     let routes = view.routes.clone();
     let error = view.error.clone();

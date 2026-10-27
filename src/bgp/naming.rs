@@ -36,6 +36,19 @@ pub fn generate_policy_names(description: &str) -> PolicyNames {
     }
 }
 
+/// Cumulus policies are scoped to the exact neighbor identifier so two peers
+/// with the same description cannot inherit each other's permit rules.
+pub fn generate_cumulus_policy_names(description: &str, neighbor_id: &str) -> PolicyNames {
+    let tag = sanitize_description(description);
+    let short_tag: String = tag.chars().take(24).collect();
+    let id_hex: String = neighbor_id
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02X}"))
+        .collect();
+    generate_policy_names(&format!("{short_tag}-{id_hex}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -59,5 +72,16 @@ mod tests {
     fn already_upper() {
         let names = generate_policy_names("UPSTREAM-PROVIDER");
         assert_eq!(names.rm_in, "RM-UPSTREAM-PROVIDER-IN");
+    }
+
+    #[test]
+    fn cumulus_policy_names_are_neighbor_specific() {
+        let first = generate_cumulus_policy_names("Spine", "swp51");
+        let second = generate_cumulus_policy_names("Spine", "swp52");
+        assert_ne!(first.rm_in, second.rm_in);
+        assert_eq!(
+            first.rm_in,
+            generate_cumulus_policy_names("Spine", "swp51").rm_in
+        );
     }
 }

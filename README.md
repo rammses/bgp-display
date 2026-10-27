@@ -19,7 +19,7 @@
 - Encrypted credential storage (AES-256-GCM, Argon2id key derivation)
 - SSH via system OpenSSH with ControlMaster multiplexing
 
-**Supported routers:** Cisco IOS / IOS-XE · VyOS 1.5 (FRRouting) · Citrix VPX · pfSense · FortiGate (with VDOM) · A10 Networks ADC
+**Supported routers:** Cisco IOS / IOS-XE · VyOS 1.5 (FRRouting) · Cumulus Linux 5.x · Citrix VPX · pfSense · FortiGate (with VDOM) · A10 Networks ADC
 
 ---
 
@@ -33,15 +33,15 @@ brew install rammses/tap/bgp-link-manager
 
 ### Download binary
 
-Pre-built binaries for macOS (ARM + Intel), Linux (ARM + x64), and Windows x64 are available on the [Releases](https://github.com/rammses/bgp-display/releases) page.
+Pre-built binaries for macOS (ARM + Intel), Linux (ARM + x64), and Windows x64 are available on the [Releases](https://github.com/rammses/dyd-bgp/releases) page.
 
 ### Build from source
 
 **Prerequisites:** Rust 1.75+, OpenSSH client on `$PATH`, a 256-colour terminal.
 
 ```bash
-git clone https://github.com/rammses/bgp-display.git
-cd bgp-display
+git clone https://github.com/rammses/dyd-bgp.git
+cd dyd-bgp
 cargo build --release
 # binary: target/release/bgp-link-manager
 ```
@@ -102,10 +102,13 @@ After unlocking, press **`6`** to open the **Routers** tab and add your first ro
 |--------|-----------|--------|
 | Cisco IOS / IOS-XE | Direct shell | Full |
 | VyOS 1.5 (FRRouting) | `vtysh` wrapper | Full |
+| Cumulus Linux 5.x | FRR reads, NVUE writes | BGP peers, routes, policies, unnumbered |
 | Citrix VPX | Shell pipe | Full |
 | pfSense | Piped stdin | Full |
 | FortiGate | Piped stdin + VDOM | Full |
 | A10 Networks ADC | Direct shell + piped config | Full |
+
+For Cumulus BGP unnumbered, enter the interface name (for example `swp51` or `peerlink.4094`) in the neighbor field. New neighbors start with deny-all inbound and outbound route maps; edit the policies to allow intended prefixes. Cumulus configuration uses the default VRF. BFD and the wizard's direct local-preference field are unavailable for Cumulus; set local preference in a route map.
 
 ---
 
@@ -147,6 +150,7 @@ src/
 │   ├── mod.rs           RouterBackend enum dispatch
 │   ├── cisco.rs         Cisco IOS/IOS-XE
 │   ├── vyos.rs          VyOS (FRRouting)
+│   ├── cumulus.rs       Cumulus Linux 5.x (FRR + NVUE)
 │   ├── citrix.rs        Citrix VPX
 │   ├── pfsense.rs       pfSense
 │   ├── fortigate.rs     FortiGate (VDOM)
@@ -176,8 +180,8 @@ src/
 Contributions welcome — bug fixes, new vendor backends, parser improvements.
 
 ```bash
-git clone https://github.com/rammses/bgp-display.git
-cd bgp-display
+git clone https://github.com/rammses/dyd-bgp.git
+cd dyd-bgp
 cargo build && cargo clippy -- -D warnings
 ```
 

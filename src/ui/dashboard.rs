@@ -180,7 +180,7 @@ fn draw_peer_sparkline(f: &mut Frame, app: &App, area: Rect) {
 
     if total > 0 {
         let bar_width = (area.width.saturating_sub(20) as usize).min(40);
-        let filled = (estab * bar_width) / total;
+        let filled = (estab * bar_width).checked_div(total).unwrap_or(0);
         let empty = bar_width - filled;
         lines.push(Line::from(vec![
             Span::raw("  "),

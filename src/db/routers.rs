@@ -59,6 +59,7 @@ impl RouterDb {
             let router_id = router_id_s.and_then(|s| s.parse().ok());
             let vendor = match vendor_s.to_lowercase().as_str() {
                 "vyos" => RouterVendor::VyOs,
+                "cumulus" => RouterVendor::Cumulus,
                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
                 "pfsense" => RouterVendor::PfSense,
                 "fortigate" => RouterVendor::FortiGate,

@@ -44,6 +44,7 @@ pub fn apply_buf_to_draft(draft: &mut RouterConfig, field: usize, buf: &str) {
         5 => {
             draft.vendor = match buf.to_lowercase().as_str() {
                 "vyos" => RouterVendor::VyOs,
+                "cumulus" => RouterVendor::Cumulus,
                 "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
                 "pfsense" => RouterVendor::PfSense,
                 "fortigate" => RouterVendor::FortiGate,

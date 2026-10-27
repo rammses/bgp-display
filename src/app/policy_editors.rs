@@ -36,6 +36,10 @@ impl App {
             &self.rm_editor_name,
             &self.rm_editor_entries,
         );
+        if self.wizard_preview.is_empty() {
+            self.wizard_error = Some("Policy contains fields unsupported by this vendor".into());
+            return;
+        }
         self.wizard_step = WizardStep::Review;
     }
 
@@ -87,6 +91,10 @@ impl App {
             &self.pl_editor_name,
             &self.pl_editor_entries,
         );
+        if self.wizard_preview.is_empty() {
+            self.wizard_error = Some("Policy contains fields unsupported by this vendor".into());
+            return;
+        }
         self.wizard_step = WizardStep::Review;
     }
 
@@ -148,6 +156,10 @@ impl App {
             &self.cl_editor_name,
             &self.cl_editor_entries,
         );
+        if self.wizard_preview.is_empty() {
+            self.wizard_error = Some("Policy contains fields unsupported by this vendor".into());
+            return;
+        }
         self.wizard_step = WizardStep::Review;
     }
 }

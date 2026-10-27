@@ -37,7 +37,7 @@ pub fn parse_cisco_bgp_summary(output: &str, router_id: IpAddr, local_as: u32) -
     // Regex: Neighbor V AS MsgRcvd MsgSent TblVer InQ OutQ Up/Down State/PfxRcd [PfxSnt] [Desc]
     // The PfxSnt column is present in newer FRR versions.
     let row_re = regex::Regex::new(
-        r"^\s*(\d{1,3}(?:\.\d{1,3}){3})\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(\d+))?",
+        r"^\s*(\S+)\s+\d+\s+(\d+)\s+(\d+)\s+(\d+)\s+\d+\s+\d+\s+\d+\s+(\S+)\s+(\S+)(?:\s+(\d+))?",
     )
     .unwrap();
     let tv_re = regex::Regex::new(r"table version is (\d+)").unwrap();
@@ -47,9 +47,11 @@ pub fn parse_cisco_bgp_summary(output: &str, router_id: IpAddr, local_as: u32) -
             table_version = cap[1].parse().unwrap_or(0);
         }
         if let Some(cap) = row_re.captures(line) {
-            let neighbor_ip: IpAddr = cap[1]
-                .parse()
-                .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+            let neighbor_ip = cap[1]
+                .rsplit_once('(')
+                .and_then(|(_, interface)| interface.strip_suffix(')'))
+                .unwrap_or(&cap[1])
+                .to_string();
             let remote_as: u32 = cap[2].parse().unwrap_or(0);
             let msg_rcvd: u64 = cap[3].parse().unwrap_or(0);
             let msg_sent: u64 = cap[4].parse().unwrap_or(0);
@@ -106,6 +108,28 @@ pub fn parse_cisco_bgp_summary(output: &str, router_id: IpAddr, local_as: u32) -
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cumulus_summary_keeps_unnumbered_interface_identity() {
+        let output = "BGP router identifier 10.10.10.1, local AS number 65101 vrf-id 0\n\
+Neighbor              V         AS   MsgRcvd   MsgSent   TblVer  InQ OutQ  Up/Down State/PfxRcd\n\
+spine01(swp51)        4      65199     31122     31194        0    0    0 1d01h44m            7\n\
+peerlink.4094         4      65101       120       122        0    0    0 00:01:00       Active\n\
+10.0.0.2              4      65200       100       105        0    0    0 00:02:00            3  5  TRANSIT\n";
+        let summary = parse_bgp_summary(output);
+        assert_eq!(summary.peers.len(), 3);
+        assert_eq!(summary.peers[0].neighbor_ip, "swp51");
+        assert_eq!(summary.peers[0].prefixes_received, 7);
+        assert_eq!(summary.peers[1].neighbor_ip, "peerlink.4094");
+        assert_eq!(summary.peers[1].state, BgpState::Active);
+        assert_eq!(summary.peers[2].neighbor_ip, "10.0.0.2");
+        assert_eq!(summary.peers[2].prefixes_advertised, 5);
+    }
+}
+
 // ─── A10 ACOS `show ip bgp summary` parser ──────────────────────────────────
 //
 // A10 uses `State/PfxRcd/PfxSent` with slash-separated values:
@@ -142,9 +166,7 @@ pub fn parse_a10_bgp_summary(output: &str) -> BgpSummary {
             table_version = cap[1].parse().unwrap_or(0);
         }
         if let Some(cap) = row_re.captures(line) {
-            let neighbor_ip: IpAddr = cap[1]
-                .parse()
-                .unwrap_or(IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED));
+            let neighbor_ip = cap[1].to_string();
             let remote_as: u32 = cap[2].parse().unwrap_or(0);
             let msg_rcvd: u64 = cap[3].parse().unwrap_or(0);
             let msg_sent: u64 = cap[4].parse().unwrap_or(0);

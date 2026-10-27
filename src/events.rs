@@ -26,12 +26,12 @@ pub enum AppEvent {
     /// Per-peer routes fetched (received or advertised).
     PeerRoutes(
         Uuid,
-        IpAddr,
+        String,
         crate::bgp::PeerRouteDirection,
         Vec<crate::bgp::BgpRoute>,
     ),
     /// Per-peer routes fetch failed.
-    PeerRoutesError(Uuid, IpAddr, crate::bgp::PeerRouteDirection, String),
+    PeerRoutesError(Uuid, String, crate::bgp::PeerRouteDirection, String),
     /// Path-MTU probe result. The u16 is the max IP-frame size that succeeded (0 = all failed).
     MtuProbeResult(Uuid, IpAddr, u16),
     /// Path-MTU probe could not be executed (SSH error etc.).
@@ -76,7 +76,7 @@ pub enum FetchRequest {
     /// Fetch per-peer received/advertised routes.
     FetchPeerRoutes {
         router_id: Uuid,
-        ip: IpAddr,
+        ip: String,
         dir: crate::bgp::PeerRouteDirection,
     },
     /// Run a DF-bit MTU probe from a router to target.

@@ -1,12 +1,12 @@
 mod a10;
 mod cisco;
+mod cumulus;
 mod fortigate;
 mod vyos;
 
-use crate::bgp::naming::generate_policy_names;
+use crate::bgp::naming::{generate_cumulus_policy_names, generate_policy_names};
 use crate::bgp::{CommunityListEntry, NeighborDraft, PrefixListEntry, RouteMapEntry};
 use crate::router::RouterVendor;
-use std::net::IpAddr;
 
 // ─── Create neighbor ─────────────────────────────────────────────────────────
 
@@ -15,12 +15,17 @@ pub fn create_neighbor_commands(
     draft: &NeighborDraft,
     local_as: u32,
 ) -> Vec<String> {
-    let names = generate_policy_names(&draft.description);
+    let names = if matches!(vendor, RouterVendor::Cumulus) {
+        generate_cumulus_policy_names(&draft.description, draft.neighbor_ip.trim())
+    } else {
+        generate_policy_names(&draft.description)
+    };
     match vendor {
         RouterVendor::Cisco | RouterVendor::PfSense | RouterVendor::CitrixVpx => {
             cisco::cisco_create(draft, local_as, &names)
         }
         RouterVendor::VyOs => vyos::vyos_create(draft, local_as, &names),
+        RouterVendor::Cumulus => cumulus::cumulus_create(draft, &names),
         RouterVendor::FortiGate => fortigate::fortigate_create(draft, &names),
         RouterVendor::A10 => a10::a10_create(draft, local_as, &names),
     }
@@ -30,7 +35,7 @@ pub fn create_neighbor_commands(
 
 pub fn delete_neighbor_commands(
     vendor: &RouterVendor,
-    neighbor_ip: IpAddr,
+    neighbor_ip: &str,
     local_as: u32,
     description: &str,
 ) -> Vec<String> {
@@ -61,6 +66,7 @@ pub fn delete_neighbor_commands(
                 format!("delete policy prefix-list {}", names.pl_out),
             ]
         }
+        RouterVendor::Cumulus => cumulus::cumulus_delete(neighbor_ip, description),
         RouterVendor::FortiGate => {
             vec![
                 "config router bgp".into(),
@@ -97,6 +103,7 @@ pub fn routemap_save_commands(
             cisco::cisco_routemap_save(name, entries)
         }
         RouterVendor::VyOs => vyos::vyos_routemap_save(name, entries),
+        RouterVendor::Cumulus => cumulus::cumulus_routemap_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_routemap_save(name, entries),
         RouterVendor::A10 => a10::a10_routemap_save(name, entries),
     }
@@ -114,6 +121,7 @@ pub fn prefixlist_save_commands(
             cisco::cisco_prefixlist_save(name, entries)
         }
         RouterVendor::VyOs => vyos::vyos_prefixlist_save(name, entries),
+        RouterVendor::Cumulus => cumulus::cumulus_prefixlist_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_prefixlist_save(name, entries),
         RouterVendor::A10 => a10::a10_prefixlist_save(name, entries),
     }
@@ -131,6 +139,7 @@ pub fn communitylist_save_commands(
             cisco::cisco_communitylist_save(name, entries)
         }
         RouterVendor::VyOs => vyos::vyos_communitylist_save(name, entries),
+        RouterVendor::Cumulus => cumulus::cumulus_communitylist_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_communitylist_save(name, entries),
         RouterVendor::A10 => a10::a10_communitylist_save(name, entries),
     }
@@ -138,7 +147,7 @@ pub fn communitylist_save_commands(
 
 // ─── Neighbor shutdown toggle ────────────────────────────────────────────────
 
-pub fn shutdown_neighbor_commands(vendor: &RouterVendor, ip: IpAddr, local_as: u32) -> Vec<String> {
+pub fn shutdown_neighbor_commands(vendor: &RouterVendor, ip: &str, local_as: u32) -> Vec<String> {
     let ip = ip.to_string();
     match vendor {
         RouterVendor::Cisco
@@ -154,6 +163,7 @@ pub fn shutdown_neighbor_commands(vendor: &RouterVendor, ip: IpAddr, local_as: u
         RouterVendor::VyOs => {
             vec![format!("set protocols bgp neighbor {ip} shutdown")]
         }
+        RouterVendor::Cumulus => cumulus::cumulus_shutdown(&ip),
         RouterVendor::FortiGate => {
             vec![
                 "config router bgp".into(),
@@ -170,7 +180,7 @@ pub fn shutdown_neighbor_commands(vendor: &RouterVendor, ip: IpAddr, local_as: u
 
 pub fn no_shutdown_neighbor_commands(
     vendor: &RouterVendor,
-    ip: IpAddr,
+    ip: &str,
     local_as: u32,
 ) -> Vec<String> {
     let ip = ip.to_string();
@@ -188,6 +198,7 @@ pub fn no_shutdown_neighbor_commands(
         RouterVendor::VyOs => {
             vec![format!("delete protocols bgp neighbor {ip} shutdown")]
         }
+        RouterVendor::Cumulus => cumulus::cumulus_no_shutdown(&ip),
         RouterVendor::FortiGate => {
             vec![
                 "config router bgp".into(),

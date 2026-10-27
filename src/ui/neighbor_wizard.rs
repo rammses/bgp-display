@@ -47,7 +47,7 @@ fn draw_fields(f: &mut Frame, app: &App, area: Rect) {
     for (i, label) in NeighborDraft::FIELDS.iter().enumerate() {
         let is_active = i == app.wizard_field;
         let value = if is_active && !NeighborDraft::is_toggle_field(i) {
-            if i == 8 {
+            if i == NeighborDraft::PASSWORD_FIELD {
                 format!("{}▌", "●".repeat(app.wizard_buf.len()))
             } else {
                 format!("{}▌", app.wizard_buf)
@@ -101,7 +101,14 @@ fn draw_fields(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ))]
     } else {
-        let names = generate_policy_names(desc);
+        let names = if app
+            .selected_router()
+            .is_some_and(|router| router.vendor == crate::router::RouterVendor::Cumulus)
+        {
+            crate::bgp::naming::generate_cumulus_policy_names(desc, draft.neighbor_ip.trim())
+        } else {
+            generate_policy_names(desc)
+        };
         vec![
             Line::from(vec![Span::styled(
                 "  Auto-creates: ",
@@ -216,6 +223,10 @@ fn draw_review(f: &mut Frame, app: &App, area: Rect) {
         .wizard_preview
         .iter()
         .map(|line| {
+            let display_line = line
+                .split_once(" password ")
+                .map(|(prefix, _)| format!("{prefix} password ********"))
+                .unwrap_or_else(|| line.clone());
             let style = if line.starts_with("no ")
                 || line.starts_with(" no ")
                 || line.starts_with("delete")
@@ -229,7 +240,7 @@ fn draw_review(f: &mut Frame, app: &App, area: Rect) {
             } else {
                 Style::default().fg(C_DIM)
             };
-            ListItem::new(Span::styled(format!("  {line}"), style))
+            ListItem::new(Span::styled(format!("  {display_line}"), style))
         })
         .collect();
 
