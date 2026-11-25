@@ -2,7 +2,7 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
 use super::{RegisteredSession, SshSessionManager};
-use crate::router::mikrotik::decode_envelope;
+use crate::router::mikrotik::{decode_envelope, NativeWireError};
 use crate::router::RouterConfig;
 use anyhow::{bail, Result};
 use serde::{Deserialize, Serialize};
@@ -383,6 +383,19 @@ async fn execute_native<P: NativeChild>(
     spawn: impl FnOnce(Command) -> io::Result<P>,
     limits: NativeLimits,
 ) -> Result<Value, NativeExecError> {
+    execute_native_with_decoder(config, command, spawn, limits, |bytes, request| {
+        decode_envelope(&bytes, request)
+    })
+    .await
+}
+
+async fn execute_native_with_decoder<P: NativeChild>(
+    config: &RouterConfig,
+    command: NativeCommand,
+    spawn: impl FnOnce(Command) -> io::Result<P>,
+    limits: NativeLimits,
+    decode: impl FnOnce(Vec<u8>, Uuid) -> Result<Value, NativeWireError> + Send + 'static,
+) -> Result<Value, NativeExecError> {
     let deadline = tokio::time::Instant::now() + limits.timeout;
     let not_started = |_| NativeExecError {
         code: "spawn",
@@ -443,7 +456,38 @@ async fn execute_native<P: NativeChild>(
             return Err(error);
         }
     };
-    decode_envelope(&bytes, command.request).map_err(|error| failed(error.code))
+    if tokio::time::Instant::now() >= deadline {
+        return Err(failed("timeout"));
+    }
+    // Only owned received bytes/request and deadline control metadata cross
+    // this boundary, never the executable command, pinned config or credentials.
+    let request = command.request;
+    let parsing = tokio::task::spawn_blocking(move || {
+        // A blocking-pool job may have been queued until after its budget.
+        if tokio::time::Instant::now() >= deadline {
+            return Err(NativeExecError {
+                code: "timeout",
+                started: true,
+            });
+        }
+        decode(bytes, request).map_err(|error| NativeExecError {
+            code: error.code,
+            started: true,
+        })
+    });
+    // Started blocking work is not abortable. Timeout detaches pure private
+    // computation; do not await/drain it beyond the original foreground budget.
+    let decoded = tokio::time::timeout_at(deadline, parsing).await;
+    // A ready join can win timeout polling even at/after expiry. Never publish
+    // that value without an explicit completion-time check of the same deadline.
+    if tokio::time::Instant::now() >= deadline {
+        return Err(failed("timeout"));
+    }
+    match decoded {
+        Ok(Ok(result)) => result,
+        Ok(Err(_)) => Err(failed("decode-worker")),
+        Err(_) => Err(failed("timeout")),
+    }
 }
 
 #[cfg(test)]
@@ -828,6 +872,123 @@ mod tests {
         assert_eq!(error.code, "stderr");
         assert!(error.started);
         assert_eq!(stats.killed.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.reaped.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mikrotik_transport_decode_deadline_covers_post_collection_without_blocking_async() {
+        let async_thread = std::thread::current().id();
+        let stats = Arc::new(ProcessStats::default());
+        let task_stats = Arc::clone(&stats);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (finished_tx, finished_rx) = tokio::sync::oneshot::channel();
+        let execution = tokio::spawn(async move {
+            execute_native_with_decoder(
+                &RouterConfig::default(),
+                command(),
+                fake(&task_stats, envelope(), vec![], true),
+                NativeLimits {
+                    output_bytes: 1024,
+                    timeout: Duration::from_secs(1),
+                },
+                move |bytes, request| {
+                    let _ = entered_tx.send(std::thread::current().id());
+                    // An explicit post-collection phase gate, not a slow JSON
+                    // fixture or sleep. Safety timeout/disconnection also releases
+                    // the old synchronous path if it stalls this async runtime.
+                    let released = release_rx.recv_timeout(Duration::from_secs(2)).is_ok();
+                    let result = decode_envelope(&bytes, request);
+                    let _ = finished_tx.send(released);
+                    result
+                },
+            )
+            .await
+        });
+        let entered = tokio::time::timeout(Duration::from_secs(3), entered_rx).await;
+        let result = tokio::time::timeout(Duration::from_secs(3), execution).await;
+        // Always release/drain BEFORE assertions, including the RED/error path.
+        // Dropping the sender also unblocks the receiver if this test unwinds.
+        let _ = release_tx.send(());
+        let finished = tokio::time::timeout(Duration::from_secs(3), finished_rx).await;
+        let result = result
+            .expect("execution escaped test safety bound")
+            .unwrap();
+        assert!(
+            result.is_err(),
+            "post-collection decode published success after budget"
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "timeout");
+        assert!(error.started);
+        assert_ne!(entered.unwrap().unwrap(), async_thread);
+        assert!(
+            finished.unwrap().unwrap(),
+            "decode gate needed its safety release"
+        );
+        assert_eq!(stats.attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.killed.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.reaped.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.unreaped_drops.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn mikrotik_transport_decode_does_not_start_after_expired_collection_budget() {
+        let stats = Arc::new(ProcessStats::default());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let decode_calls = Arc::clone(&calls);
+        let result = execute_native_with_decoder(
+            &RouterConfig::default(),
+            command(),
+            fake(&stats, envelope(), vec![], true),
+            NativeLimits {
+                output_bytes: 1024,
+                timeout: Duration::ZERO,
+            },
+            move |bytes, request| {
+                decode_calls.fetch_add(1, Ordering::SeqCst);
+                decode_envelope(&bytes, request)
+            },
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "expired collection budget still published decoded data"
+        );
+        let error = result.unwrap_err();
+        assert_eq!(error.code, "timeout");
+        assert!(error.started);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.killed.load(Ordering::SeqCst), 0);
+        assert_eq!(stats.reaped.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn mikrotik_transport_decode_worker_failure_is_safe() {
+        let stats = Arc::new(ProcessStats::default());
+        let task_stats = Arc::clone(&stats);
+        let result = tokio::spawn(async move {
+            execute_native_with_decoder(
+                &RouterConfig::default(),
+                command(),
+                fake(&task_stats, envelope(), vec![], true),
+                NativeLimits::PRODUCTION,
+                |_, _| panic!("modeled decoder worker failure"),
+            )
+            .await
+        })
+        .await;
+        assert!(
+            result.is_ok(),
+            "decoder worker failure escaped native executor"
+        );
+        let error = result.unwrap().unwrap_err();
+        assert_eq!(error.code, "decode-worker");
+        assert!(error.started);
+        assert!(!format!("{error:?} {error}").contains("modeled decoder worker failure"));
+        assert_eq!(stats.attempts.load(Ordering::SeqCst), 1);
+        assert_eq!(stats.killed.load(Ordering::SeqCst), 0);
         assert_eq!(stats.reaped.load(Ordering::SeqCst), 1);
     }
 
