@@ -6,7 +6,7 @@ use ratatui::{
     layout::Rect,
     style::{Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, List, ListState, Paragraph, Wrap},
     Frame,
 };
 
@@ -47,6 +47,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
             ));
             lines.push(Line::from("Edit: untouched fields Keep. ~ explicitly unsets supported optional override; inherited result is reviewed."));
             lines.push(Line::from("Identity/scope immutable on edit. Creation: disabled + both enabled reject chains. Filter editing read-only."));
+            let mut fields = Vec::new();
+            let mut selected_value = String::new();
             for (index, label) in NATIVE_FIELDS.iter().enumerate() {
                 let value = if index == 14 {
                     if editor.draft.values[index].is_empty() {
@@ -59,12 +61,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 } else {
                     presentation_text(&editor.draft.values[index])
                 };
+                if index == editor.field {
+                    selected_value = value.clone(); // already sanitized/masked, never the MD5 value
+                }
                 let style = Style::default().fg(if index == editor.field {
                     C_SELECTED
                 } else {
                     C_DIM
                 });
-                lines.push(Line::styled(
+                fields.push(Line::styled(
                     format!(
                         "{} {label}: {value}",
                         if index == editor.field { "▶" } else { " " }
@@ -72,8 +77,56 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     style,
                 ));
             }
-            lines.push(Line::from("Supported roles ebgp/ibgp/ibgp-rr; AFI ip/ipv6 independently of transport; next-hop default/force-self/propagate."));
-            lines.push(Line::from("Native timers: infinity/3m/00:03:00; BFD is a request, not operational proof. Hidden existing MD5 is never assumed empty."));
+            fields.push(Line::from("Supported roles ebgp/ibgp/ibgp-rr; AFI ip/ipv6 independently of transport; next-hop default/force-self/propagate."));
+            fields.push(Line::from("Native timers: infinity/3m/00:03:00; BFD is a request, not operational proof. Hidden existing MD5 is never assumed empty."));
+
+            // Bound field rows instead of estimating post-wrap offsets from a
+            // logical index. A long preceding value cannot consume the viewport.
+            // Pin the selected label/value and MD5 mode independently of both
+            // the list and header; all clipping is display-only, never a save.
+            let detail_height = inner.height.min(4);
+            let header_height = inner.height.saturating_sub(detail_height + 2).min(4);
+            let field_height = inner.height.saturating_sub(header_height + detail_height);
+            let header = Rect {
+                height: header_height,
+                ..inner
+            };
+            let field_area = Rect {
+                y: inner.y + header_height,
+                height: field_height,
+                ..inner
+            };
+            let detail_area = Rect {
+                y: field_area.y + field_height,
+                height: detail_height,
+                ..inner
+            };
+            frame.render_widget(Paragraph::new(lines), header);
+            // Selection is already app-owned. Recompute only this widget's
+            // viewport on each draw/resize; no new editor state or key behavior.
+            let mut state = ListState::default().with_selected(Some(editor.field));
+            frame.render_stateful_widget(List::new(fields), field_area, &mut state);
+            let note = editor
+                .error
+                .as_deref()
+                .map(presentation_text)
+                .unwrap_or_else(|| "Display clipped; full values kept. Enter: Review.".into());
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled(
+                        format!("▶ {}", NATIVE_FIELDS[editor.field]),
+                        Style::default().fg(C_SELECTED),
+                    ),
+                    Line::styled(selected_value, Style::default().fg(C_SELECTED)),
+                    Line::styled(
+                        format!("MD5 mode: {}", presentation_text(&editor.draft.values[13])),
+                        Style::default().fg(C_HEADER),
+                    ),
+                    Line::styled(note, Style::default().fg(C_WARN)),
+                ]),
+                detail_area,
+            );
+            return;
         }
         NativeEditorStage::Review => {
             lines.push(Line::styled(
@@ -127,17 +180,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
             Style::default().fg(C_WARN),
         )));
     }
-    // Fields remain navigable even in a short terminal; no source value is
-    // truncated on save. Review wraps rather than exposing command payloads.
-    let scroll = if editor.stage == NativeEditorStage::Fields {
-        ((editor.field + 5) as u16).saturating_sub(inner.height.saturating_sub(3))
-    } else {
-        editor.scroll
-    };
+    // Review/result still wrap and scroll the complete text. Fields use the
+    // bounded viewport above without mutating or truncating any draft value.
     frame.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
-            .scroll((scroll, 0)),
+            .scroll((editor.scroll, 0)),
         inner,
     );
 }

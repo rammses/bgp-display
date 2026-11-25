@@ -601,6 +601,197 @@ mod native_tests {
             .collect()
     }
 
+    fn native_frame_rows(app: &mut App, width: u16, height: u16) -> Vec<String> {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(usize::from(width))
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect())
+            .collect()
+    }
+
+    fn native_editor_key(app: &mut App, code: crossterm::event::KeyCode) {
+        crate::app::handle_key(
+            app,
+            crossterm::event::KeyEvent::new(code, crossterm::event::KeyModifiers::NONE),
+        );
+    }
+
+    fn native_select_field(app: &mut App, field: usize, navigation: crossterm::event::KeyCode) {
+        for _ in 0..15 {
+            if app.native_editor.as_ref().unwrap().field == field {
+                return;
+            }
+            native_editor_key(app, navigation);
+        }
+        assert_eq!(
+            app.native_editor.as_ref().unwrap().field,
+            field,
+            "native field navigation did not reach its target"
+        );
+    }
+
+    fn native_app_with_comment(comment: &str) -> App {
+        use crate::router::mikrotik::{config_guard, join_native_peers};
+        let mut app = native_app();
+        let mut snapshot = documented_snapshot();
+        snapshot.inventory.connections[0]
+            .props
+            .insert("comment".into(), serde_json::json!(comment));
+        snapshot.guard = config_guard(&snapshot.inventory, "blue").unwrap();
+        snapshot.peers =
+            join_native_peers(&snapshot.inventory, "blue", snapshot.generation).unwrap();
+        app.request_native_refresh(snapshot.router_id);
+        snapshot.request = app.native_cache[&snapshot.router_id].latest_request;
+        app.handle_native_data(
+            snapshot.router_id,
+            snapshot.request,
+            NativeDiscovery::Snapshot(snapshot),
+        );
+        app.current_tab = ActiveTab::Peers;
+        app.peer_table_state.select(Some(0));
+        app.wizard_open_edit("ignored".into());
+        app
+    }
+
+    #[test]
+    fn mikrotik_neighbor_rev001_lower_selected_fields_and_mode_stay_visible_after_long_comment() {
+        use crossterm::event::KeyCode;
+        for comment in [
+            "word ".repeat(200),
+            "界😀e\u{301} ".repeat(200),
+            "界".repeat(400),
+        ] {
+            let mut app = native_app_with_comment(&comment);
+            let base = std::sync::Arc::clone(&app.native_editor.as_ref().unwrap().base);
+            native_select_field(&mut app, 13, KeyCode::Tab);
+            for mode in ["Keep", "Replace"] {
+                if mode == "Replace" {
+                    native_editor_key(&mut app, KeyCode::Char(' '));
+                }
+                for (width, height) in [(80, 24), (80, 12), (60, 12), (40, 10)] {
+                    let rows = native_frame_rows(&mut app, width, height);
+                    assert!(
+                        rows.iter()
+                            .any(|row| row.contains("▶ MD5 Keep / Replace / Clear")),
+                        "selected mode control hidden at {width}x{height}"
+                    );
+                    assert!(
+                        rows.iter().any(|row| row.contains(&format!(": {mode}"))),
+                        "actual MD5 mode hidden at {width}x{height}"
+                    );
+                }
+            }
+            native_editor_key(&mut app, KeyCode::Tab);
+            for character in "REV001_MD5_SENTINEL".chars() {
+                native_editor_key(&mut app, KeyCode::Char(character));
+            }
+            for (width, height) in [(80, 24), (80, 12), (60, 12), (40, 10)] {
+                let rows = native_frame_rows(&mut app, width, height);
+                assert!(
+                    rows.iter().any(|row| row.contains("▶ MD5 replacement")),
+                    "selected replacement control hidden at {width}x{height}"
+                );
+                assert!(
+                    rows.iter()
+                        .any(|row| row.contains("<hidden replacement entered>")),
+                    "hidden replacement value indicator missing"
+                );
+                assert!(
+                    rows.iter().any(|row| row.contains(": Replace")),
+                    "MD5 mode must remain visible while replacement is selected"
+                );
+                assert!(!rows.join("\n").contains("REV001_MD5_SENTINEL"));
+            }
+            native_editor_key(&mut app, KeyCode::BackTab);
+            native_editor_key(&mut app, KeyCode::Char(' '));
+            let rows = native_frame_rows(&mut app, 40, 10);
+            assert!(
+                rows.iter()
+                    .any(|row| row.contains("▶ MD5 Keep / Replace / Clear"))
+                    && rows.iter().any(|row| row.contains(": Clear"))
+            );
+            native_editor_key(&mut app, KeyCode::Tab);
+            let rows = native_frame_rows(&mut app, 40, 10);
+            assert!(
+                rows.iter().any(|row| row.contains("▶ MD5 replacement"))
+                    && rows.iter().any(|row| row.contains("<hidden; not entered>"))
+            );
+            assert!(rows.iter().any(|row| row.contains(": Clear")));
+            let editor = app.native_editor.as_ref().unwrap();
+            assert_eq!(editor.draft.values[6], comment);
+            assert!(editor.draft.values[14].is_empty());
+            assert!(std::sync::Arc::ptr_eq(&base, &editor.base));
+            assert_eq!(
+                base.inventory.connections[0].props["comment"],
+                serde_json::json!(comment)
+            );
+        }
+    }
+
+    #[test]
+    fn mikrotik_secret_rev001_short_fields_mask_secret_and_preserve_full_scrollable_comment_review()
+    {
+        use crossterm::event::KeyCode;
+        let comment = format!("{} ORIGINAL_COMMENT_END", "word ".repeat(200));
+        let mut app = native_app_with_comment(&comment);
+        native_select_field(&mut app, 13, KeyCode::Tab);
+        native_editor_key(&mut app, KeyCode::Char(' '));
+        native_editor_key(&mut app, KeyCode::Tab);
+        for character in "REV001_SECRET_VALUE".chars() {
+            native_editor_key(&mut app, KeyCode::Char(character));
+        }
+        let rows = native_frame_rows(&mut app, 48, 10);
+        assert!(
+            rows.iter().any(|row| row.contains("▶ MD5 replacement"))
+                && rows
+                    .iter()
+                    .any(|row| row.contains("<hidden replacement entered>"))
+        );
+        assert!(rows.iter().any(|row| row.contains(": Replace")));
+        assert!(!rows.join("\n").contains("REV001_SECRET_VALUE"));
+        native_editor_key(&mut app, KeyCode::BackTab);
+        native_editor_key(&mut app, KeyCode::Char(' '));
+        native_editor_key(&mut app, KeyCode::Char(' ')); // Clear -> Keep
+        native_select_field(&mut app, 6, KeyCode::BackTab);
+        native_editor_key(&mut app, KeyCode::Char('!'));
+        native_editor_key(&mut app, KeyCode::Enter);
+        let editor = app.native_editor.as_ref().unwrap();
+        assert_eq!(editor.stage, crate::app::NativeEditorStage::Review);
+        assert_eq!(
+            editor.base.inventory.connections[0].props["comment"],
+            serde_json::json!(comment)
+        );
+        assert_eq!(editor.draft.values[6], format!("{comment}!"));
+        assert!(editor.draft.values[14].is_empty());
+        let crate::router::mikrotik::NativeIntent::Patch { changes, .. } =
+            &editor.preview.as_ref().unwrap().intent
+        else {
+            panic!("expected patch");
+        };
+        assert_eq!(
+            changes.properties["comment"],
+            serde_json::json!(format!("{comment}!"))
+        );
+        let mut tail_visible = false;
+        for _ in 0..100 {
+            let rows = native_frame_rows(&mut app, 80, 24);
+            assert!(!rows.join("\n").contains("REV001_SECRET_VALUE"));
+            if rows.iter().any(|row| row.contains("ORIGINAL_COMMENT_END!")) {
+                tail_visible = true;
+                break;
+            }
+            native_editor_key(&mut app, KeyCode::PageDown);
+        }
+        assert!(
+            tail_visible,
+            "complete changed comment must remain reachable in Review"
+        );
+    }
+
     #[test]
     fn mikrotik_neighbor_overlay_masks_secret_and_shows_native_review_not_cisco() {
         let mut app = native_app();
