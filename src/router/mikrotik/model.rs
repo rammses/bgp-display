@@ -3,6 +3,8 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
+use crate::ssh::NativeRegistration;
+
 pub type Properties = BTreeMap<String, Value>;
 
 /// Observed source values are retained verbatim, including unknown properties.
@@ -24,6 +26,9 @@ pub struct NativeInventory {
     pub sessions: Vec<NativeRecord>,
     pub rules: Vec<NativeRecord>,
     pub bgp_reference_inventory_complete: bool,
+    /// Positive observations only. Nested script/other-protocol consumers are
+    /// unknown even when the direct BGP reference inventory is complete; this
+    /// is never a complete dependency audit or a no-consumers assertion.
     pub known_other_protocol_chains: BTreeSet<String>,
 }
 
@@ -42,6 +47,57 @@ pub struct NativeConnectionRef {
     pub name: String,
     pub observed_id: String,
     pub generation: Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativePeerRow {
+    pub connection: Option<NativeConnectionRef>,
+    pub session_id: Option<String>,
+    pub record: NativeRecord,
+    pub session: Option<NativeRecord>,
+    pub scope: ScopeEligibility,
+    pub read_only_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeRead<T> {
+    Available(T),
+    Unavailable(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MikroTikSnapshot {
+    pub router_id: Uuid,
+    pub registration: NativeRegistration,
+    pub request: Uuid,
+    pub generation: Uuid,
+    pub instance: String,
+    pub inventory: NativeInventory,
+    /// For incomplete reference reads this is an explicit non-actionable marker,
+    /// not a configuration guard: it has completeness=false and no config rows.
+    /// `config_guard` still rejects that inventory; actions must never accept it.
+    pub guard: ConfigGuard,
+    pub peers: Vec<NativePeerRow>,
+    pub routes: NativeRead<Vec<NativeRecord>>,
+    pub advertisements: NativeRead<Vec<NativeRecord>>,
+    pub fetched_at: chrono::DateTime<chrono::Utc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+// The approved Task3 caller contract returns Snapshot(MikroTikSnapshot), not a
+// boxed variant. Keep that boundary verbatim rather than silently changing it.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "approved inline native discovery DTO contract"
+)]
+pub enum NativeDiscovery {
+    Instances {
+        router_id: Uuid,
+        registration: NativeRegistration,
+        request: Uuid,
+        names: Vec<String>,
+    },
+    Snapshot(MikroTikSnapshot),
 }
 
 /// Only fixed client codes cross the wire-error boundary; never device text.
