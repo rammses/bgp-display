@@ -103,7 +103,8 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                         RouterVendor::CitrixVpx => RouterVendor::PfSense,
                         RouterVendor::PfSense => RouterVendor::FortiGate,
                         RouterVendor::FortiGate => RouterVendor::A10,
-                        RouterVendor::A10 => RouterVendor::Cisco,
+                        RouterVendor::A10 => RouterVendor::MikroTik,
+                        RouterVendor::MikroTik => RouterVendor::Cisco,
                     };
                     app.editor_buf = draft.vendor.to_string();
                 }
@@ -449,21 +450,27 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.accept_pending_update();
             }
             app.current_tab = ActiveTab::Dashboard;
-            app.bgp_refresh_tick = 149;
+            if !app.is_native_selected() {
+                app.bgp_refresh_tick = 149;
+            }
         }
         KeyCode::Char('2') => {
             if app.current_tab == ActiveTab::Config && app.has_pending_update {
                 app.accept_pending_update();
             }
             app.current_tab = ActiveTab::Peers;
-            app.bgp_refresh_tick = 149;
+            if !app.is_native_selected() {
+                app.bgp_refresh_tick = 149;
+            }
         }
         KeyCode::Char('3') => {
             if app.current_tab == ActiveTab::Config && app.has_pending_update {
                 app.accept_pending_update();
             }
             app.current_tab = ActiveTab::Routes;
-            app.bgp_refresh_tick = 149;
+            if !app.is_native_selected() {
+                app.bgp_refresh_tick = 149;
+            }
         }
         KeyCode::Char('4') => app.current_tab = ActiveTab::Config,
         KeyCode::Char('5') => {
@@ -471,21 +478,27 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
                 app.accept_pending_update();
             }
             app.current_tab = ActiveTab::Logs;
-            app.bgp_refresh_tick = 149;
+            if !app.is_native_selected() {
+                app.bgp_refresh_tick = 149;
+            }
         }
         KeyCode::Char('6') => {
             if app.current_tab == ActiveTab::Config && app.has_pending_update {
                 app.accept_pending_update();
             }
             app.current_tab = ActiveTab::Routers;
-            app.bgp_refresh_tick = 149;
+            if !app.is_native_selected() {
+                app.bgp_refresh_tick = 149;
+            }
         }
         KeyCode::Char('7') => {
             if app.current_tab == ActiveTab::Config && app.has_pending_update {
                 app.accept_pending_update();
             }
             app.current_tab = ActiveTab::ConnLog;
-            app.bgp_refresh_tick = 149;
+            if !app.is_native_selected() {
+                app.bgp_refresh_tick = 149;
+            }
         }
 
         // ── Navigation ───────────────────────────────────────────────────────
@@ -576,6 +589,9 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // ── Config history popup (Config tab) ─────────────────────────────────
         KeyCode::Char('h') if app.current_tab == ActiveTab::Config => {
+            if app.reject_native_management() {
+                return;
+            }
             app.load_config_history();
             app.show_history = true;
             if !app.config_history.is_empty() {
@@ -630,6 +646,10 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // ── Path-MTU probe (Peers tab) ──────────────────────────────────────
         KeyCode::Char('m') if app.current_tab == ActiveTab::Peers => {
+            if app.is_native_selected() {
+                app.set_status("MikroTik MTU unavailable — no native probes");
+                return;
+            }
             if let Some(ip) = app
                 .peer_table_state
                 .selected()
@@ -696,6 +716,9 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // ── Route-map / Prefix-list / Community-list editors (Config tab) ──
         KeyCode::Char('e') if app.current_tab == ActiveTab::Config => {
+            if app.reject_native_management() {
+                return;
+            }
             if let Some(line) = app
                 .config_list_state
                 .selected()

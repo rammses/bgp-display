@@ -28,6 +28,7 @@ pub fn create_neighbor_commands(
         RouterVendor::Cumulus => cumulus::cumulus_create(draft, &names),
         RouterVendor::FortiGate => fortigate::fortigate_create(draft, &names),
         RouterVendor::A10 => a10::a10_create(draft, local_as, &names),
+        RouterVendor::MikroTik => vec![], // Native-only; caller must reject.
     }
 }
 
@@ -43,6 +44,7 @@ pub fn delete_neighbor_commands(
     let ip = neighbor_ip.to_string();
 
     match vendor {
+        RouterVendor::MikroTik => vec![],
         RouterVendor::Cisco
         | RouterVendor::PfSense
         | RouterVendor::CitrixVpx
@@ -106,6 +108,7 @@ pub fn routemap_save_commands(
         RouterVendor::Cumulus => cumulus::cumulus_routemap_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_routemap_save(name, entries),
         RouterVendor::A10 => a10::a10_routemap_save(name, entries),
+        RouterVendor::MikroTik => vec![],
     }
 }
 
@@ -124,6 +127,7 @@ pub fn prefixlist_save_commands(
         RouterVendor::Cumulus => cumulus::cumulus_prefixlist_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_prefixlist_save(name, entries),
         RouterVendor::A10 => a10::a10_prefixlist_save(name, entries),
+        RouterVendor::MikroTik => vec![],
     }
 }
 
@@ -142,6 +146,7 @@ pub fn communitylist_save_commands(
         RouterVendor::Cumulus => cumulus::cumulus_communitylist_save(name, entries),
         RouterVendor::FortiGate => fortigate::fortigate_communitylist_save(name, entries),
         RouterVendor::A10 => a10::a10_communitylist_save(name, entries),
+        RouterVendor::MikroTik => vec![],
     }
 }
 
@@ -150,6 +155,7 @@ pub fn communitylist_save_commands(
 pub fn shutdown_neighbor_commands(vendor: &RouterVendor, ip: &str, local_as: u32) -> Vec<String> {
     let ip = ip.to_string();
     match vendor {
+        RouterVendor::MikroTik => vec![],
         RouterVendor::Cisco
         | RouterVendor::PfSense
         | RouterVendor::CitrixVpx
@@ -185,6 +191,7 @@ pub fn no_shutdown_neighbor_commands(
 ) -> Vec<String> {
     let ip = ip.to_string();
     match vendor {
+        RouterVendor::MikroTik => vec![],
         RouterVendor::Cisco
         | RouterVendor::PfSense
         | RouterVendor::CitrixVpx
@@ -209,6 +216,34 @@ pub fn no_shutdown_neighbor_commands(
                 "end".into(),
                 "end".into(),
             ]
+        }
+    }
+}
+
+#[cfg(test)]
+mod mikrotik_tests {
+    use super::*;
+
+    #[test]
+    fn mikrotik_management_generators_never_emit_legacy_commands() {
+        let vendor = RouterVendor::MikroTik;
+        assert!(create_neighbor_commands(&vendor, &NeighborDraft::default(), 65000).is_empty());
+        assert!(delete_neighbor_commands(&vendor, "192.0.2.2", 65000, "test").is_empty());
+        assert!(shutdown_neighbor_commands(&vendor, "192.0.2.2", 65000).is_empty());
+        assert!(no_shutdown_neighbor_commands(&vendor, "192.0.2.2", 65000).is_empty());
+        assert!(routemap_save_commands(&vendor, "native-chain", &[]).is_empty());
+        assert!(prefixlist_save_commands(&vendor, "native-list", &[]).is_empty());
+        assert!(communitylist_save_commands(&vendor, "native-list", &[]).is_empty());
+        for vendor in [
+            RouterVendor::Cisco,
+            RouterVendor::VyOs,
+            RouterVendor::Cumulus,
+            RouterVendor::CitrixVpx,
+            RouterVendor::PfSense,
+            RouterVendor::FortiGate,
+            RouterVendor::A10,
+        ] {
+            assert!(!shutdown_neighbor_commands(&vendor, "192.0.2.2", 65000).is_empty());
         }
     }
 }

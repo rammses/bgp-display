@@ -185,6 +185,48 @@ fn syntax_highlight(line: &str) -> Line<'static> {
 // ─── Right panel (dynamic) ────────────────────────────────────────────────────
 
 fn draw_right_panel(f: &mut Frame, app: &App, area: Rect) {
+    if app
+        .selected_router()
+        .is_some_and(|r| r.vendor == crate::router::RouterVendor::MikroTik)
+    {
+        let mut lines = vec![
+            Line::from("Native monitoring — management unavailable"),
+            Line::from("Config navigation uses this displayed snapshot only."),
+            Line::from("Audit: nested/other-protocol filter consumers unknown."),
+            Line::from("Advertisements / MTU unavailable; no hidden probes."),
+        ];
+        if let Some((source, target)) = app.displayed_native_target() {
+            lines.push(Line::from(format!(
+                "Source generation: {}",
+                source.generation
+            )));
+            lines.push(Line::from(crate::router::mikrotik::presentation_text(
+                &match target {
+                    crate::app::NativeConfigTarget::Connection(connection) => format!(
+                        "Connection: {} / {} [{}]",
+                        connection.instance, connection.name, connection.observed_id
+                    ),
+                    crate::app::NativeConfigTarget::Chain(chain) => {
+                        format!("Filter chain: {chain}")
+                    }
+                },
+            )));
+        }
+        if let Some(reason) = app
+            .selected_router()
+            .and_then(|r| app.native_cache.get(&r.id))
+            .and_then(|c| c.stale_reason.as_deref())
+        {
+            lines.push(Line::from(format!("STALE / N/A: {reason}")));
+        }
+        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Native source (read-only) "),
+        );
+        f.render_widget(paragraph, area);
+        return;
+    }
     if let Some(pl_name) = &app.config_pl_name {
         draw_prefixlist_detail(f, app, pl_name, area);
     } else if let Some(rm) = &app.config_routemap {

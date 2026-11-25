@@ -19,6 +19,12 @@ pub enum AppEvent {
     BgpData(Uuid, Box<crate::bgp::BgpSummary>, String),
     /// BGP fetch failed for a router.
     BgpError(Uuid, String),
+    NativeData(Uuid, Uuid, Box<crate::router::mikrotik::NativeDiscovery>),
+    NativeError(Uuid, Uuid, String),
+    NativeRoutes(
+        crate::app::NativeRouteRequest,
+        crate::router::mikrotik::NativeRead<Vec<crate::bgp::BgpRoute>>,
+    ),
     /// BGP route table fetched successfully.
     RouteData(Uuid, Vec<crate::bgp::BgpRoute>),
     /// Route-map detail (entries + expanded prefix/community lists) fetched.
@@ -67,12 +73,27 @@ pub enum AppEvent {
 
 /// Messages sent from the App to the background DataFetchService.
 pub enum FetchRequest {
+    RefreshMikroTik {
+        router_id: Uuid,
+        request: Uuid,
+        instance: Option<String>,
+    },
+    FetchNativeRoutes {
+        request: crate::app::NativeRouteRequest,
+        source: std::sync::Arc<crate::router::mikrotik::MikroTikSnapshot>,
+    },
+    // Credential-bearing control: intentionally no Debug/logging of payloads.
+    UpdateNativeRegistration(crate::router::RouterConfig),
+    RemoveNativeRegistration(Uuid),
     /// Full BGP refresh for a single router (summary + routes).
     RefreshRouter(Uuid),
     /// Refresh all connected routers (IDs supplied by caller).
     RefreshMany(Vec<Uuid>),
     /// Fetch route-map detail for a router.
-    FetchRouteMap { router_id: Uuid, rm_name: String },
+    FetchRouteMap {
+        router_id: Uuid,
+        rm_name: String,
+    },
     /// Fetch per-peer received/advertised routes.
     FetchPeerRoutes {
         router_id: Uuid,
@@ -80,7 +101,10 @@ pub enum FetchRequest {
         dir: crate::bgp::PeerRouteDirection,
     },
     /// Run a DF-bit MTU probe from a router to target.
-    FetchMtu { router_id: Uuid, target: IpAddr },
+    FetchMtu {
+        router_id: Uuid,
+        target: IpAddr,
+    },
     /// TCP reachability probes: vec of (router_id, "host:port").
     Ping(Vec<(Uuid, String)>),
     /// Push CLI commands to a router and save running config.

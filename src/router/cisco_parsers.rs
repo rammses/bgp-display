@@ -251,15 +251,17 @@ pub(crate) fn parse_bgp_table(output: &str) -> Vec<BgpRoute> {
         };
 
         routes.push(BgpRoute {
-            status,
+            status: Some(status),
+            native_flags: None,
+            as_path_raw: None,
             network,
             next_hop,
             metric,
             local_pref,
-            weight,
-            as_path,
-            origin,
-            communities: vec![],
+            weight: Some(weight),
+            as_path: Some(as_path),
+            origin: Some(origin),
+            communities: Some(vec![]),
         });
     }
 

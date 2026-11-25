@@ -7,6 +7,9 @@ impl App {
     // ── Route-map editor helpers ──────────────────────────────────────────────
 
     pub fn open_routemap_editor(&mut self, name: &str) {
+        if self.reject_native_management() {
+            return;
+        }
         let router_id = match self.selected_router() {
             Some(r) => r.id,
             None => return,
@@ -27,6 +30,9 @@ impl App {
     }
 
     pub fn rm_editor_generate_preview(&mut self) {
+        if self.reject_native_management() {
+            return;
+        }
         let vendor = self
             .selected_router()
             .map(|r| r.vendor.clone())
@@ -46,6 +52,9 @@ impl App {
     // ── Prefix-list editor helpers ────────────────────────────────────────────
 
     pub fn open_prefixlist_editor(&mut self, name: &str) {
+        if self.reject_native_management() {
+            return;
+        }
         let router_id = match self.selected_router() {
             Some(r) => r.id,
             None => return,
@@ -73,6 +82,9 @@ impl App {
     }
 
     pub fn pl_editor_generate_preview(&mut self) {
+        if self.reject_native_management() {
+            return;
+        }
         // Validate all entries before generating commands
         for (i, entry) in self.pl_editor_entries.iter().enumerate() {
             if let Err(e) = entry.validate() {
@@ -101,6 +113,9 @@ impl App {
     // ── Community-list editor helpers ─────────────────────────────────────────
 
     pub fn open_communitylist_editor(&mut self, name: &str) {
+        if self.reject_native_management() {
+            return;
+        }
         let router_id = match self.selected_router() {
             Some(r) => r.id,
             None => return,
@@ -139,6 +154,9 @@ impl App {
     }
 
     pub fn cl_editor_generate_preview(&mut self) {
+        if self.reject_native_management() {
+            return;
+        }
         for (i, entry) in self.cl_editor_entries.iter().enumerate() {
             if let Err(e) = entry.validate() {
                 self.wizard_error = Some(format!("Entry {} (seq {}): {e}", i + 1, entry.seq));

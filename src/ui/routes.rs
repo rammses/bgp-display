@@ -14,6 +14,7 @@ use ratatui::{
 // ─── Routes tab ───────────────────────────────────────────────────────────────
 
 pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
+    let detail_height = if app.is_native_selected() { 6 } else { 5 };
     // Split off a filter bar when filter is active
     let (table_area, filter_area, detail_area) = if app.route_filter_mode != FilterMode::Off {
         let chunks = Layout::default()
@@ -21,14 +22,14 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
             .constraints([
                 Constraint::Min(0),
                 Constraint::Length(3),
-                Constraint::Length(5),
+                Constraint::Length(detail_height),
             ])
             .split(area);
         (chunks[0], Some(chunks[1]), chunks[2])
     } else {
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(5)])
+            .constraints([Constraint::Min(0), Constraint::Length(detail_height)])
             .split(area);
         (chunks[0], None, chunks[1])
     };
@@ -47,7 +48,10 @@ pub fn draw(f: &mut Frame, app: &mut App, area: Rect) {
 
 // ─── Route table ──────────────────────────────────────────────────────────────
 
-fn status_style(s: &RouteStatus) -> Style {
+fn status_style(status: &Option<RouteStatus>) -> Style {
+    let Some(s) = status else {
+        return Style::default().fg(C_DIM);
+    };
     match s {
         RouteStatus::BestExternal => Style::default()
             .fg(C_ESTABLISHED)
@@ -57,10 +61,14 @@ fn status_style(s: &RouteStatus) -> Style {
         RouteStatus::Internal => Style::default().fg(Color::LightBlue),
         RouteStatus::Suppressed => Style::default().fg(C_DIM),
         RouteStatus::History => Style::default().fg(C_DIM),
+        RouteStatus::Filtered | RouteStatus::Unreachable => Style::default().fg(Color::Red),
     }
 }
 
-fn origin_style(o: &RouteOrigin) -> Style {
+fn origin_style(origin: &Option<RouteOrigin>) -> Style {
+    let Some(o) = origin else {
+        return Style::default().fg(C_DIM);
+    };
     match o {
         RouteOrigin::Igp => Style::default().fg(C_ESTABLISHED),
         RouteOrigin::Egp => Style::default().fg(C_WARN),
@@ -94,7 +102,8 @@ fn draw_route_table(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|&idx| {
             let route = &app.current_routes[idx];
             Row::new(vec![
-                Cell::from(route.status.to_string()).style(status_style(&route.status)),
+                Cell::from(crate::bgp::known_text(route.status.as_ref()))
+                    .style(status_style(&route.status)),
                 Cell::from(route.network.clone()),
                 Cell::from(route.next_hop.clone()),
                 Cell::from(
@@ -109,10 +118,17 @@ fn draw_route_table(f: &mut Frame, app: &mut App, area: Rect) {
                         .map(|m| m.to_string())
                         .unwrap_or_else(|| "—".into()),
                 ),
-                Cell::from(route.weight.to_string()),
+                Cell::from(crate::bgp::known_text(route.weight)),
                 Cell::from(route.as_path_str()),
-                Cell::from(route.origin.to_string()).style(origin_style(&route.origin)),
-                Cell::from(route.communities.join(" ")),
+                Cell::from(crate::bgp::known_text(route.origin.as_ref()))
+                    .style(origin_style(&route.origin)),
+                Cell::from(
+                    route
+                        .communities
+                        .as_ref()
+                        .map(|c| c.join(" "))
+                        .unwrap_or_else(|| "N/A".into()),
+                ),
             ])
             .height(1)
         })
@@ -120,11 +136,24 @@ fn draw_route_table(f: &mut Frame, app: &mut App, area: Rect) {
 
     let total = app.current_routes.len();
     let shown = app.route_indices.len();
-    let title = if app.route_filter_mode != FilterMode::Off {
+    let mut title = if app.route_filter_mode != FilterMode::Off {
         format!(" BGP Routes: {} ({}/{} match) ", router_name, shown, total)
     } else {
         format!(" BGP Routes: {} ({} routes) ", router_name, total)
     };
+    if let Some(router) = app
+        .selected_router()
+        .filter(|r| r.vendor == crate::router::RouterVendor::MikroTik)
+    {
+        let stale = app
+            .native_cache
+            .get(&router.id)
+            .and_then(|c| c.stale_reason.as_deref());
+        title = format!(
+            " Native stored routes (not full Adj-RIB-In) — {} ",
+            stale.unwrap_or("observed selected-main cache")
+        );
+    }
 
     let widths = [
         Constraint::Length(3),
@@ -166,7 +195,7 @@ fn draw_route_detail(f: &mut Frame, app: &App, area: Rect) {
         .and_then(|i| app.route_indices.get(i))
         .and_then(|&idx| app.current_routes.get(idx));
 
-    let lines: Vec<Line> = if let Some(r) = route {
+    let mut lines: Vec<Line> = if let Some(r) = route {
         vec![
             Line::from(vec![
                 Span::raw("  "),
@@ -174,7 +203,7 @@ fn draw_route_detail(f: &mut Frame, app: &App, area: Rect) {
                 Span::raw("   "),
                 kv("Next-Hop ", r.next_hop.clone()),
                 Span::raw("   "),
-                kv("Origin ", r.origin.to_string()),
+                kv("Origin ", crate::bgp::known_text(r.origin.as_ref())),
             ]),
             Line::from(vec![
                 Span::raw("  "),
@@ -192,13 +221,19 @@ fn draw_route_detail(f: &mut Frame, app: &App, area: Rect) {
                         .unwrap_or_else(|| "—".into()),
                 ),
                 Span::raw("   "),
-                kv("Weight ", r.weight.to_string()),
+                kv("Weight ", crate::bgp::known_text(r.weight)),
             ]),
             Line::from(vec![
                 Span::raw("  "),
                 kv("AS Path    ", r.as_path_str()),
                 Span::raw("   "),
-                kv("Communities ", r.communities.join(" ")),
+                kv(
+                    "Communities ",
+                    r.communities
+                        .as_ref()
+                        .map(|c| c.join(" "))
+                        .unwrap_or_else(|| "N/A".into()),
+                ),
             ]),
         ]
     } else {
@@ -207,6 +242,9 @@ fn draw_route_detail(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         ))]
     };
+    if let Some(flags) = route.and_then(|route| route.native_flags.as_ref()) {
+        lines.push(Line::from(format!("  Native flags/raw: {flags}")));
+    }
 
     let title = route
         .map(|r| format!(" Route Detail: {} ", r.network))

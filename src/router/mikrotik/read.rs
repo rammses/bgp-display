@@ -23,6 +23,14 @@ pub enum NativeMenu {
     Sessions,
     Rules,
     Routes,
+    // Retain the optional compiler contract without probing unsupported data.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "unsupported advertisement menu compiler retained; monitoring never queries it"
+        )
+    )]
     Advertisements,
 }
 

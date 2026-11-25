@@ -13,7 +13,9 @@ impl App {
                 }
                 let p = &self.current_peers[i];
                 p.neighbor_ip.to_string().contains(&filter)
-                    || p.remote_as.to_string().contains(&filter)
+                    || crate::bgp::known_text(p.remote_as)
+                        .to_lowercase()
+                        .contains(&filter)
                     || p.state.as_str().to_lowercase().contains(&filter)
                     || p.description
                         .as_deref()
@@ -64,8 +66,11 @@ impl App {
                     || r.as_path_str().contains(&filter)
                     || r.communities
                         .iter()
+                        .flatten()
                         .any(|c| c.to_lowercase().contains(&filter))
-                    || r.origin.to_string().to_lowercase().contains(&filter)
+                    || crate::bgp::known_text(r.origin.as_ref())
+                        .to_lowercase()
+                        .contains(&filter)
             })
             .collect();
         match self.route_table_state.selected() {

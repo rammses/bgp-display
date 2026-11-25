@@ -1,7 +1,8 @@
 use super::{
     apply_buf_to_draft, editor_field_value, App, ConfirmAction, EditorMode, EDITOR_NFIELDS,
 };
-use crate::router::RouterConfig;
+use crate::events::FetchRequest;
+use crate::router::{RouterConfig, RouterVendor};
 use uuid::Uuid;
 
 impl App {
@@ -41,6 +42,12 @@ impl App {
     pub fn editor_delete_selected(&mut self) {
         if let Some(idx) = self.editor_list_state.selected() {
             if idx < self.routers.len() {
+                let native_id = (self.routers[idx].vendor == RouterVendor::MikroTik)
+                    .then_some(self.routers[idx].id);
+                if let Some(id) = native_id {
+                    self.invalidate_native(id);
+                    self.send_fetch(FetchRequest::RemoveNativeRegistration(id));
+                }
                 let removed = self.routers.remove(idx);
                 self.router_status.remove(&removed.id);
                 if let Some(pos) = self.all_routers.iter().position(|r| r.id == removed.id) {
@@ -56,6 +63,13 @@ impl App {
                         .select(Some(idx.min(self.routers.len() - 1)));
                 }
                 self.set_status(format!("Deleted '{}' — saved to DB", removed.name));
+                if native_id.is_some() {
+                    self.router_list_state.select(
+                        (!self.routers.is_empty())
+                            .then_some(idx.min(self.routers.len().saturating_sub(1))),
+                    );
+                    self.reload_selected_router();
+                }
             }
         }
     }
@@ -72,6 +86,15 @@ impl App {
         }
         if self.editor_field + 1 < EDITOR_NFIELDS {
             self.editor_field += 1;
+            if self.editor_field == 7
+                && self
+                    .editor_draft
+                    .as_ref()
+                    .is_some_and(|r| r.vendor != RouterVendor::MikroTik)
+            {
+                self.editor_persist_draft();
+                return;
+            }
             if let Some(draft) = self.editor_draft.as_ref() {
                 self.editor_buf = editor_field_value(draft, self.editor_field);
             }
@@ -94,6 +117,14 @@ impl App {
 
     fn editor_persist_draft(&mut self) {
         if let Some(draft) = self.editor_draft.take() {
+            let native_involved = draft.vendor == RouterVendor::MikroTik
+                || self
+                    .all_routers
+                    .iter()
+                    .any(|r| r.id == draft.id && r.vendor == RouterVendor::MikroTik);
+            if native_involved {
+                self.invalidate_native(draft.id);
+            }
             let name = draft.name.clone();
             if let Some(pos) = self.routers.iter().position(|r| r.id == draft.id) {
                 self.routers[pos] = draft.clone();
@@ -114,6 +145,13 @@ impl App {
             }
             // Auto-persist to encrypted DB immediately
             self.db_upsert(&draft);
+            if native_involved {
+                self.send_fetch(FetchRequest::UpdateNativeRegistration(draft.clone()));
+                self.request_refresh_ids(vec![draft.id]);
+                if self.selected_router().is_some_and(|r| r.id == draft.id) {
+                    self.reload_selected_router();
+                }
+            }
             self.editor_mode = EditorMode::Browse;
             self.editor_buf.clear();
             self.set_status(format!("'{name}' saved to DB ✓"));

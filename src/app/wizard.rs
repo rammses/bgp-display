@@ -6,6 +6,9 @@ use crate::router::RouterVendor;
 
 impl App {
     pub fn wizard_open_create(&mut self) {
+        if self.reject_native_management() {
+            return;
+        }
         self.wizard_mode = WizardMode::NeighborCreate;
         self.wizard_step = WizardStep::Fields;
         self.wizard_field = 0;
@@ -17,6 +20,9 @@ impl App {
     }
 
     pub fn wizard_open_edit(&mut self, peer_ip: String) {
+        if self.reject_native_management() {
+            return;
+        }
         let router_id = self.selected_router().map(|r| r.id);
 
         // Prefer the stored desired-state draft (has password etc.)
@@ -32,19 +38,36 @@ impl App {
         let draft = if let Some(d) = from_desired {
             d
         } else if let Some(peer) = self.current_peers.iter().find(|p| p.neighbor_ip == peer_ip) {
+            let (
+                Some(remote_as),
+                Some(next_hop_self),
+                Some(route_reflector_client),
+                Some(hold_time),
+                Some(keepalive),
+            ) = (
+                peer.remote_as,
+                peer.next_hop_self,
+                peer.route_reflector_client,
+                peer.hold_time,
+                peer.keepalive,
+            )
+            else {
+                self.set_status("Edit unavailable: required legacy observations unknown");
+                return;
+            };
             NeighborDraft {
                 router_id,
                 neighbor_ip: peer.neighbor_ip.to_string(),
-                remote_as: peer.remote_as.to_string(),
+                remote_as: remote_as.to_string(),
                 description: peer.description.clone().unwrap_or_default(),
                 update_source: peer
                     .update_source
                     .map(|s| s.to_string())
                     .unwrap_or_default(),
-                next_hop_self: peer.next_hop_self,
-                route_reflector_client: peer.route_reflector_client,
-                hold_time: peer.hold_time.to_string(),
-                keepalive: peer.keepalive.to_string(),
+                next_hop_self,
+                route_reflector_client,
+                hold_time: hold_time.to_string(),
+                keepalive: keepalive.to_string(),
                 bfd: peer.bfd_state.is_some(),
                 address_family: crate::bgp::AddressFamily::from_ip(&peer.neighbor_ip.to_string()),
                 ..Default::default()
@@ -64,6 +87,9 @@ impl App {
     }
 
     pub fn wizard_open_delete(&mut self, peer_ip: String) {
+        if self.reject_native_management() {
+            return;
+        }
         self.wizard_mode = WizardMode::NeighborDelete(peer_ip.clone());
         self.wizard_step = WizardStep::Review;
         self.wizard_error = None;
@@ -80,7 +106,7 @@ impl App {
             let local_as = self
                 .current_summary
                 .as_ref()
-                .map(|s| s.local_as)
+                .and_then(|s| s.local_as)
                 .unwrap_or(0);
             let vendor = self
                 .selected_router()
@@ -103,6 +129,9 @@ impl App {
     }
 
     pub fn load_config_history(&mut self) {
+        if self.reject_native_management() {
+            return;
+        }
         if let Some(router) = self.selected_router() {
             let rid = router.id;
             if let Some(db) = &self.router_db {
@@ -112,10 +141,21 @@ impl App {
     }
 
     pub fn execute_rollback(&mut self, idx: usize) {
+        if self.reject_native_management() {
+            return;
+        }
         if idx >= self.config_history.len() {
             return;
         }
         let entry = self.config_history[idx].clone();
+        if self
+            .all_routers
+            .iter()
+            .any(|r| r.id == entry.router_id && r.vendor == RouterVendor::MikroTik)
+        {
+            self.set_status("MikroTik native management unavailable — rollback rejected");
+            return;
+        }
         if entry.rollback.is_empty() {
             self.set_status("No rollback commands available for this entry");
             return;
@@ -130,11 +170,14 @@ impl App {
     }
 
     pub fn wizard_generate_preview(&mut self) {
+        if self.reject_native_management() {
+            return;
+        }
         if let Some(draft) = &self.wizard_draft {
             let local_as = self
                 .current_summary
                 .as_ref()
-                .map(|s| s.local_as)
+                .and_then(|s| s.local_as)
                 .unwrap_or(0);
             let vendor = self
                 .selected_router()
@@ -182,6 +225,9 @@ impl App {
     }
 
     pub fn wizard_apply(&mut self) {
+        if self.reject_native_management() {
+            return;
+        }
         if self.wizard_preview.is_empty() {
             return;
         }
@@ -196,7 +242,7 @@ impl App {
         let local_as = self
             .current_summary
             .as_ref()
-            .map(|s| s.local_as)
+            .and_then(|s| s.local_as)
             .unwrap_or(0);
 
         let (description, action, rollback) = match &self.wizard_mode {

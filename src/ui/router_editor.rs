@@ -81,6 +81,9 @@ fn draw_edit_form(f: &mut Frame, app: &App, area: Rect) {
 
     if let Some(d) = draft {
         for (i, field_label) in EDITOR_FIELDS.iter().enumerate() {
+            if i == 7 && d.vendor != crate::router::RouterVendor::MikroTik {
+                continue;
+            }
             let label = *field_label;
             let is_active = editing && i == app.editor_field;
 
@@ -107,6 +110,10 @@ fn draw_edit_form(f: &mut Frame, app: &App, area: Rect) {
                         .unwrap_or_default(),
                     5 => d.vendor.to_string(),
                     6 => d.vdom.clone().unwrap_or_default(),
+                    7 => d
+                        .mikrotik_instance
+                        .clone()
+                        .unwrap_or_else(|| "(discovery only)".into()),
                     _ => String::new(),
                 }
             };

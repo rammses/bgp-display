@@ -24,6 +24,7 @@ pub fn editor_field_value(r: &RouterConfig, field: usize) -> String {
         4 => r.password.clone().unwrap_or_default(),
         5 => r.vendor.to_string(),
         6 => r.vdom.clone().unwrap_or_default(),
+        7 if r.vendor == RouterVendor::MikroTik => r.mikrotik_instance.clone().unwrap_or_default(),
         _ => String::new(),
     }
 }
@@ -42,15 +43,7 @@ pub fn apply_buf_to_draft(draft: &mut RouterConfig, field: usize, buf: &str) {
             }
         }
         5 => {
-            draft.vendor = match buf.to_lowercase().as_str() {
-                "vyos" => RouterVendor::VyOs,
-                "cumulus" => RouterVendor::Cumulus,
-                "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
-                "pfsense" => RouterVendor::PfSense,
-                "fortigate" => RouterVendor::FortiGate,
-                "a10" => RouterVendor::A10,
-                _ => RouterVendor::Cisco,
-            }
+            draft.vendor = RouterVendor::from_config_name(buf).unwrap_or(RouterVendor::Cisco);
         }
         6 => {
             draft.vdom = if buf.is_empty() {
@@ -58,6 +51,9 @@ pub fn apply_buf_to_draft(draft: &mut RouterConfig, field: usize, buf: &str) {
             } else {
                 Some(buf.to_string())
             }
+        }
+        7 if draft.vendor == RouterVendor::MikroTik => {
+            draft.mikrotik_instance = (!buf.is_empty()).then(|| buf.to_owned());
         }
         _ => {}
     }

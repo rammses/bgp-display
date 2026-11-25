@@ -120,3 +120,26 @@ pub fn documented_inventory() -> NativeInventory {
         known_other_protocol_chains: BTreeSet::new(),
     }
 }
+
+/// Synthetic documentation-derived snapshot; never collected from a device.
+pub fn documented_snapshot() -> super::MikroTikSnapshot {
+    let inventory = documented_inventory();
+    let generation = Uuid::new_v4();
+    super::MikroTikSnapshot {
+        router_id: Uuid::nil(),
+        registration: documented_registration(),
+        request: Uuid::new_v4(),
+        generation,
+        instance: "blue".into(),
+        guard: super::config_guard(&inventory, "blue").unwrap(),
+        peers: super::join_native_peers(&inventory, "blue", generation).unwrap(),
+        inventory,
+        routes: super::NativeRead::Available(vec![record(json!({
+            ".id":"*10", "dst-address":"203.0.113.0/24", "afi":"ip4",
+            "routing-table":"main", "bgp.session":"peer-a-1",
+            "bgp.as-path":"65001,{65002,65003}", "contribution":"filtered"
+        }))]),
+        advertisements: super::NativeRead::Unavailable("native advertisements unavailable".into()),
+        fetched_at: chrono::Utc::now(),
+    }
+}

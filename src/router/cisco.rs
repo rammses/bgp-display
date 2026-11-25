@@ -47,7 +47,7 @@ impl CiscoBackend {
     // ── SSH helpers (delegated to session manager) ────────────────────────────
 
     async fn ssh_run(&self, cmd: &str) -> Result<String> {
-        self.ssh.run_cmd(self.config.id, cmd).await
+        self.ssh.run_cmd_for(&self.config, cmd).await
     }
 
     async fn ssh_run_or_vtysh(&self, cmd: &str, marker: &str) -> Result<String> {
@@ -126,20 +126,20 @@ impl CiscoBackend {
                 peer.description = d.description;
                 peer.route_map_in = d.route_map_in;
                 peer.route_map_out = d.route_map_out;
-                peer.next_hop_self = d.next_hop_self;
-                peer.route_reflector_client = d.route_reflector_client;
+                peer.next_hop_self = Some(d.next_hop_self);
+                peer.route_reflector_client = Some(d.route_reflector_client);
                 peer.update_source = d.update_source;
-                peer.password_configured = d.password_configured;
+                peer.password_configured = Some(d.password_configured);
                 if d.hold_time > 0 {
-                    peer.hold_time = d.hold_time;
+                    peer.hold_time = Some(d.hold_time);
                 }
                 if d.keepalive > 0 {
-                    peer.keepalive = d.keepalive;
+                    peer.keepalive = Some(d.keepalive);
                 }
-                peer.reset_count = d.reset_count;
+                peer.reset_count = Some(d.reset_count);
                 peer.last_reset_reason = d.last_reset_reason;
-                peer.notifs_sent = d.notifs_sent;
-                peer.notifs_rcvd = d.notifs_rcvd;
+                peer.notifs_sent = Some(d.notifs_sent);
+                peer.notifs_rcvd = Some(d.notifs_rcvd);
                 if d.bfd_state.is_some() {
                     peer.bfd_state = d.bfd_state;
                 }
@@ -211,7 +211,7 @@ impl CiscoBackend {
         let vtysh_stdin = format!("vtysh\n{stdin}");
         let out = self
             .ssh
-            .run_piped(self.config.id, &vtysh_stdin)
+            .run_piped_for(&self.config, &vtysh_stdin)
             .await
             .context("write_config: SSH pipe to vtysh failed")?;
 
@@ -312,14 +312,16 @@ impl CiscoBackend {
     // ── render_bgp_stanza ─────────────────────────────────────────────────────
 
     pub fn render_bgp_stanza(summary: &BgpSummary) -> String {
-        let mut lines = vec![format!("router bgp {}", summary.local_as)];
-        lines.push(format!(" bgp router-id {}", summary.router_id));
+        use crate::bgp::known_text;
+        let mut lines = vec![format!("router bgp {}", known_text(summary.local_as))];
+        lines.push(format!(" bgp router-id {}", known_text(summary.router_id)));
         lines.push(" bgp log-neighbor-changes".into());
 
         for peer in &summary.peers {
             lines.push(format!(
                 " neighbor {} remote-as {}",
-                peer.neighbor_ip, peer.remote_as
+                peer.neighbor_ip,
+                known_text(peer.remote_as)
             ));
             if let Some(desc) = &peer.description {
                 lines.push(format!(
@@ -327,7 +329,7 @@ impl CiscoBackend {
                     peer.neighbor_ip, desc
                 ));
             }
-            if peer.next_hop_self {
+            if peer.next_hop_self == Some(true) {
                 lines.push(format!(" neighbor {} next-hop-self", peer.neighbor_ip));
             }
             if let Some(src) = peer.update_source {
@@ -336,7 +338,7 @@ impl CiscoBackend {
                     peer.neighbor_ip, src
                 ));
             }
-            if peer.password_configured {
+            if peer.password_configured == Some(true) {
                 lines.push(format!(
                     " neighbor {} password <configured>",
                     peer.neighbor_ip
@@ -458,5 +460,49 @@ impl CiscoBackend {
             prefix_lists,
             community_lists,
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_model_tests {
+    use super::*;
+
+    #[test]
+    fn mikrotik_unknowns_legacy_parsers_and_render_keep_prior_values() {
+        for vendor in [
+            "Cisco",
+            "VyOs",
+            "Cumulus",
+            "CitrixVpx",
+            "PfSense",
+            "FortiGate",
+            "A10",
+        ] {
+            let row = if vendor == "A10" { "9/ 4" } else { "9 4" };
+            let input = format!("BGP router identifier 192.0.2.1, local AS number 65000\nBGP table version is 12\n192.0.2.2 4 65001 10 20 1 0 0 00:01:00 {row}");
+            let summary = if vendor == "A10" {
+                crate::bgp::parse_a10_bgp_summary(&input)
+            } else {
+                crate::bgp::parse_bgp_summary(&input)
+            };
+            assert_eq!(summary.local_as, Some(65000), "{vendor}");
+            assert_eq!(summary.router_id.unwrap().to_string(), "192.0.2.1");
+            assert_eq!(summary.table_version, Some(12));
+            assert_eq!(summary.total_prefixes(), Some(9));
+            let peer = &summary.peers[0];
+            assert_eq!(peer.remote_as, Some(65001));
+            assert_eq!(peer.prefixes_advertised, Some(4));
+            assert_eq!(peer.hold_time, Some(90));
+            assert_eq!(peer.next_hop_self, Some(false));
+            assert_eq!(peer.session_type(), "eBGP");
+            assert_eq!(CiscoBackend::render_bgp_stanza(&summary), "router bgp 65000\n bgp router-id 192.0.2.1\n bgp log-neighbor-changes\n neighbor 192.0.2.2 remote-as 65001\n!");
+        }
+        let routes = crate::router::cisco_parsers::parse_bgp_table(
+            "*> 203.0.113.0/24 192.0.2.2 0 100 0 65001 i",
+        );
+        assert_eq!(routes[0].as_path_str(), "65001");
+        assert_eq!(routes[0].weight, Some(0));
+        assert_eq!(routes[0].communities, Some(vec![]));
+        assert_eq!(routes[0].origin, Some(crate::bgp::RouteOrigin::Igp));
     }
 }

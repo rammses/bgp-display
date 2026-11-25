@@ -68,9 +68,7 @@ pub async fn run_tui(app: &mut App) -> Result<()> {
     // ── Initial data fetch ──────────────────────────────────────────────────
     app.request_ping();
     let all_ids: Vec<uuid::Uuid> = app.routers.iter().map(|r| r.id).collect();
-    if !all_ids.is_empty() {
-        app.send_fetch(FetchRequest::RefreshMany(all_ids));
-    }
+    app.request_refresh_ids(all_ids);
 
     tracing::info!("entering main event loop");
 
@@ -124,9 +122,24 @@ async fn run_loop<B: ratatui::backend::Backend>(
             AppEvent::Resize => {}
             AppEvent::PingResult(id, reach) => app.handle_ping_result(id, reach),
             AppEvent::BgpData(id, summary, rendered) => app.handle_bgp_data(id, *summary, rendered),
-            AppEvent::BgpError(id, err) => app.handle_bgp_error(id, err),
+            AppEvent::BgpError(id, err) => {
+                if !app.is_native_router(id) {
+                    app.handle_bgp_error(id, err);
+                }
+            }
+            AppEvent::NativeData(id, request, discovery) => {
+                app.handle_native_data(id, request, *discovery)
+            }
+            AppEvent::NativeError(id, request, error) => {
+                app.handle_native_error(id, request, error)
+            }
+            AppEvent::NativeRoutes(request, routes) => app.handle_native_routes(request, routes),
             AppEvent::RouteData(id, routes) => app.handle_route_data(id, routes),
-            AppEvent::RouteMapDetail(id, d) => app.handle_routemap_detail(id, *d),
+            AppEvent::RouteMapDetail(id, d) => {
+                if !app.is_native_router(id) {
+                    app.handle_routemap_detail(id, *d);
+                }
+            }
             AppEvent::PeerRoutes(id, ip, dir, routes) => {
                 app.handle_peer_routes(id, ip, dir, routes)
             }
@@ -134,9 +147,9 @@ async fn run_loop<B: ratatui::backend::Backend>(
                 app.handle_peer_routes_error(id, ip, dir, err)
             }
             AppEvent::MtuProbeResult(id, ip, max_bytes) => {
-                app.handle_mtu_probe_result(id, ip, max_bytes)
+                dispatch_mtu_outcome(app, id, ip, Ok(max_bytes))
             }
-            AppEvent::MtuProbeError(id, ip, err) => app.handle_mtu_probe_error(id, ip, err),
+            AppEvent::MtuProbeError(id, ip, err) => dispatch_mtu_outcome(app, id, ip, Err(err)),
             AppEvent::SshWarmComplete(ready, failed) => app.handle_ssh_warm_complete(ready, failed),
             AppEvent::SshHealthReport {
                 healthy,
@@ -148,20 +161,26 @@ async fn run_loop<B: ratatui::backend::Backend>(
                 prefix_lists,
                 community_lists,
             } => {
-                app.handle_policy_data(router_id, prefix_lists, community_lists);
+                if !app.is_native_router(router_id) {
+                    app.handle_policy_data(router_id, prefix_lists, community_lists);
+                }
             }
             AppEvent::ConfigApplied {
                 router_id,
                 description,
             } => {
-                app.handle_config_applied(router_id, description);
+                if !app.is_native_router(router_id) && !app.is_native_selected() {
+                    app.handle_config_applied(router_id, description);
+                }
             }
             AppEvent::ConfigError {
                 router_id,
                 description,
                 error,
             } => {
-                app.handle_config_error(router_id, description, error);
+                if !app.is_native_router(router_id) && !app.is_native_selected() {
+                    app.handle_config_error(router_id, description, error);
+                }
             }
         }
 
@@ -191,6 +210,9 @@ fn event_name(ev: &AppEvent) -> &'static str {
         AppEvent::PingResult(..) => "PingResult",
         AppEvent::BgpData(..) => "BgpData",
         AppEvent::BgpError(..) => "BgpError",
+        AppEvent::NativeData(..) => "NativeData",
+        AppEvent::NativeError(..) => "NativeError",
+        AppEvent::NativeRoutes(..) => "NativeRoutes",
         AppEvent::RouteData(..) => "RouteData",
         AppEvent::RouteMapDetail(..) => "RouteMapDetail",
         AppEvent::PeerRoutes(..) => "PeerRoutes",
@@ -202,5 +224,93 @@ fn event_name(ev: &AppEvent) -> &'static str {
         AppEvent::PolicyData { .. } => "PolicyData",
         AppEvent::ConfigApplied { .. } => "ConfigApplied",
         AppEvent::ConfigError { .. } => "ConfigError",
+    }
+}
+
+fn dispatch_mtu_outcome(
+    app: &mut App,
+    router_id: uuid::Uuid,
+    target: std::net::IpAddr,
+    result: std::result::Result<u16, String>,
+) {
+    match result {
+        Ok(size) => app.handle_mtu_probe_result(router_id, target, size),
+        Err(error) => app.handle_mtu_probe_error(router_id, target, error),
+    }
+}
+
+#[cfg(test)]
+mod mtu_security_tests {
+    use super::*;
+    use crate::bgp::MtuProbeState;
+    use crate::config::AppConfig;
+    use crate::db::RouterDb;
+    use crate::router::mikrotik::{test_support::documented_snapshot, NativeDiscovery};
+    use crate::router::{RouterConfig, RouterVendor};
+    use uuid::Uuid;
+
+    #[test]
+    fn mikrotik_sec_002_tui_mtu_dispatch_preserves_native_and_matching_legacy_behavior() {
+        let config = RouterConfig {
+            id: Uuid::nil(),
+            vendor: RouterVendor::MikroTik,
+            hostname: "lab.invalid".into(),
+            username: "tester".into(),
+            mikrotik_instance: Some("blue".into()),
+            ..RouterConfig::default()
+        };
+        let mut app = App::new(
+            AppConfig {
+                routers: vec![config],
+                ..AppConfig::default()
+            },
+            RouterDb::in_memory().unwrap(),
+        );
+        app.request_native_refresh(Uuid::nil());
+        let mut snapshot = documented_snapshot();
+        snapshot.request = app.native_cache[&Uuid::nil()].latest_request;
+        app.handle_native_data(
+            Uuid::nil(),
+            snapshot.request,
+            NativeDiscovery::Snapshot(snapshot),
+        );
+        app.set_status("native view unchanged");
+        let before = app.current_peers.clone();
+        let status = app.status_message.clone();
+        for origin in [Uuid::nil(), Uuid::from_u128(9)] {
+            dispatch_mtu_outcome(&mut app, origin, "192.0.2.2".parse().unwrap(), Ok(1500));
+            dispatch_mtu_outcome(
+                &mut app,
+                origin,
+                "192.0.2.2".parse().unwrap(),
+                Err("late legacy failure".into()),
+            );
+            assert_eq!(app.current_peers, before);
+            assert_eq!(app.status_message, status);
+        }
+        app.routers[0].vendor = RouterVendor::Cisco;
+        app.all_routers[0].vendor = RouterVendor::Cisco;
+        app.native_view = None;
+        app.current_peers = crate::bgp::parse_bgp_summary("BGP router identifier 192.0.2.1, local AS number 65000\n192.0.2.2 4 65001 1 2 1 0 0 00:01:00 3").peers;
+        dispatch_mtu_outcome(
+            &mut app,
+            Uuid::nil(),
+            "192.0.2.2".parse().unwrap(),
+            Ok(1400),
+        );
+        assert_eq!(
+            app.current_peers[0].mtu_probe,
+            Some(MtuProbeState::Degraded(1400))
+        );
+        dispatch_mtu_outcome(
+            &mut app,
+            Uuid::nil(),
+            "192.0.2.2".parse().unwrap(),
+            Err("matching failure".into()),
+        );
+        assert_eq!(
+            app.current_peers[0].mtu_probe,
+            Some(MtuProbeState::Failed("matching failure".into()))
+        );
     }
 }

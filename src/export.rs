@@ -21,6 +21,8 @@ pub struct ExportRouter {
     pub username: String,
     pub local_as: Option<u32>,
     pub vdom: Option<String>,
+    #[serde(default)]
+    pub mikrotik_instance: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -62,4 +64,58 @@ pub fn export_json(
 
 pub fn import_json(json: &str) -> Result<ExportData> {
     serde_json::from_str(json).context("failed to parse import JSON")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::router::{RouterConfig, RouterVendor};
+
+    #[test]
+    fn mikrotik_export_defaults_and_roundtrips_without_credentials() {
+        let old = r#"{"name":"old","hostname":"lab.invalid","vendor":"Cisco",
+            "ssh_port":22,"username":"tester","local_as":65000,"vdom":null}"#;
+        let mut router: ExportRouter = serde_json::from_str(old).unwrap();
+        assert_eq!(router.mikrotik_instance, None);
+        router.vendor = "MikroTik".into();
+        router.mikrotik_instance = Some("blue".into());
+        let json = export_json(&[router], &[], &[], &[]).unwrap();
+        assert!(!json.contains("password"));
+        let imported = import_json(&json).unwrap();
+        assert_eq!(
+            imported.routers[0].mikrotik_instance.as_deref(),
+            Some("blue")
+        );
+        assert_eq!(
+            RouterVendor::from_config_name(&imported.routers[0].vendor),
+            Some(RouterVendor::MikroTik)
+        );
+        let mut config = serde_json::to_value(RouterConfig::default()).unwrap();
+        config.as_object_mut().unwrap().remove("mikrotik_instance");
+        assert!(serde_json::from_value::<RouterConfig>(config)
+            .unwrap()
+            .mikrotik_instance
+            .is_none());
+    }
+
+    #[test]
+    fn mikrotik_export_vendor_aliases_keep_all_legacy_spellings() {
+        for (name, vendor) in [
+            ("cisco", RouterVendor::Cisco),
+            ("vYoS", RouterVendor::VyOs),
+            ("cumulus", RouterVendor::Cumulus),
+            ("citrix", RouterVendor::CitrixVpx),
+            ("CitrixVpx", RouterVendor::CitrixVpx),
+            ("pfSense", RouterVendor::PfSense),
+            ("FortiGate", RouterVendor::FortiGate),
+            ("a10", RouterVendor::A10),
+            ("mIkRoTiK", RouterVendor::MikroTik),
+        ] {
+            assert_eq!(RouterVendor::from_config_name(name), Some(vendor.clone()));
+            let json = serde_json::to_string(&vendor).unwrap();
+            assert_eq!(serde_json::from_str::<RouterVendor>(&json).unwrap(), vendor);
+        }
+        assert_eq!(RouterVendor::from_config_name("not-a-vendor"), None);
+        assert_eq!(RouterVendor::MikroTik.to_string(), "MikroTik");
+    }
 }

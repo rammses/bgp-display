@@ -23,6 +23,17 @@ pub async fn run_data_fetch_service(
 ) {
     tracing::info!("data fetch service started");
     while let Some(req) = fetch_rx.recv().await {
+        let req = match req {
+            FetchRequest::UpdateNativeRegistration(config) => {
+                ssh.register_router(config).await;
+                continue;
+            }
+            FetchRequest::RemoveNativeRegistration(id) => {
+                ssh.unregister_router(id).await;
+                continue;
+            }
+            ordinary => ordinary,
+        };
         let ssh = Arc::clone(&ssh);
         let tx = event_tx.clone();
         tokio::spawn(async move {
@@ -38,6 +49,57 @@ async fn handle_request(
     req: FetchRequest,
 ) {
     match req {
+        FetchRequest::UpdateNativeRegistration(_) | FetchRequest::RemoveNativeRegistration(_) => {
+            // These controls are handled inline by the receive loop, never spawned.
+        }
+        FetchRequest::RefreshMikroTik {
+            router_id,
+            request,
+            instance,
+        } => {
+            let Ok((config, registration)) = ssh.registered_snapshot(router_id).await else {
+                let _ = tx.send(AppEvent::NativeError(
+                    router_id,
+                    request,
+                    "native registration unavailable".into(),
+                ));
+                return;
+            };
+            if config.vendor != RouterVendor::MikroTik {
+                let _ = tx.send(AppEvent::NativeError(
+                    router_id,
+                    request,
+                    "native vendor changed".into(),
+                ));
+                return;
+            }
+            let backend = crate::router::mikrotik::MikroTikBackend::new_registered(
+                &config,
+                registration,
+                Arc::clone(&ssh),
+            );
+            match backend.discover(request, instance.as_deref()).await {
+                Ok(discovery) => {
+                    let _ = tx.send(AppEvent::NativeData(
+                        router_id,
+                        request,
+                        Box::new(discovery),
+                    ));
+                }
+                Err(_) => {
+                    // Do not expose arbitrary device text, inventory or credentials.
+                    let _ = tx.send(AppEvent::NativeError(
+                        router_id,
+                        request,
+                        "native read unavailable (version, scope, capability or transport)".into(),
+                    ));
+                }
+            }
+        }
+        FetchRequest::FetchNativeRoutes { request, source } => {
+            let result = native_peer_routes(&ssh, &request, &source).await;
+            let _ = tx.send(AppEvent::NativeRoutes(request, result));
+        }
         FetchRequest::RefreshRouter(id) => {
             refresh_router(&ssh, &tx, id).await;
         }
@@ -119,6 +181,14 @@ async fn refresh_router(
 
     let result: anyhow::Result<(crate::bgp::BgpSummary, Vec<crate::bgp::BgpRoute>)> =
         match cfg.vendor {
+            RouterVendor::MikroTik => {
+                let _ = tx.send(AppEvent::NativeError(
+                    id,
+                    Uuid::nil(),
+                    "MikroTik requires a tracked native request".into(),
+                ));
+                return;
+            }
             RouterVendor::Cisco => {
                 let mut b = CiscoBackend::new(&cfg, Arc::clone(ssh));
                 match b.refresh().await {
@@ -211,6 +281,7 @@ async fn refresh_router(
             // Fetch prefix-list and community-list definitions so they appear
             // on the Config tab and can be edited with 'e'.
             match cfg.vendor {
+                RouterVendor::MikroTik => return,
                 RouterVendor::Cisco | RouterVendor::VyOs | RouterVendor::Cumulus => {
                     let b = CiscoBackend::new(&cfg, Arc::clone(ssh));
                     let policy = b.fetch_policy_stanza().await;
@@ -257,6 +328,7 @@ async fn fetch_route_map(
     tracing::debug!(router = %cfg.name, route_map = %rm_name, "fetching route-map detail");
 
     let detail = match cfg.vendor {
+        RouterVendor::MikroTik => return,
         RouterVendor::Cisco => {
             CiscoBackend::new(&cfg, Arc::clone(ssh))
                 .fetch_route_map_detail(rm_name)
@@ -329,6 +401,7 @@ async fn fetch_peer_routes(
 
     let address = ip.parse::<IpAddr>();
     let result = match cfg.vendor {
+        RouterVendor::MikroTik => Err(anyhow::anyhow!("MikroTik requires native peer identity")),
         RouterVendor::Cisco => match address {
             Ok(ip) => {
                 CiscoBackend::new(&cfg, Arc::clone(ssh))
@@ -418,6 +491,9 @@ async fn fetch_mtu(
     tracing::debug!(router = %cfg.name, target = %target, "running MTU probe");
 
     let result = match cfg.vendor {
+        RouterVendor::MikroTik => Err(anyhow::anyhow!(
+            "MikroTik MTU unavailable; no native probes"
+        )),
         RouterVendor::Cisco => {
             CiscoBackend::new(&cfg, Arc::clone(ssh))
                 .ping_mtu(target)
@@ -500,6 +576,9 @@ async fn apply_config(
     );
 
     let result: anyhow::Result<()> = match cfg.vendor {
+        RouterVendor::MikroTik => Err(anyhow::anyhow!(
+            "MikroTik native management unavailable; raw CLI rejected"
+        )),
         RouterVendor::Cisco => {
             CiscoBackend::new(&cfg, Arc::clone(ssh))
                 .write_config(commands)
@@ -561,5 +640,177 @@ async fn apply_config(
                 error: e.to_string(),
             });
         }
+    }
+}
+
+async fn native_peer_routes(
+    ssh: &Arc<SshSessionManager>,
+    request: &crate::app::NativeRouteRequest,
+    source: &crate::router::mikrotik::MikroTikSnapshot,
+) -> crate::router::mikrotik::NativeRead<Vec<crate::bgp::BgpRoute>> {
+    use crate::router::mikrotik::NativeRead;
+    let result = async {
+        anyhow::ensure!(
+            request.router_id == source.router_id
+                && request.generation == source.generation
+                && request.registration == source.registration,
+            "native displayed source mismatch"
+        );
+        anyhow::ensure!(
+            request.direction == PeerRouteDirection::Received,
+            "native advertisements unavailable"
+        );
+        // Check the original token, not a newly looked-up registration. Even
+        // cached drill-down cannot be attributed to a replacement endpoint.
+        let _lease = ssh.native_lease(&request.registration).await?;
+        crate::app::native_stored_peer_routes(source, &request.peer)
+    }
+    .await;
+    match result {
+        Ok(routes) => NativeRead::Available(routes),
+        Err(_) => NativeRead::Unavailable("Native stored routes unavailable: stale source, scope or association (not full Adj-RIB-In)".into()),
+    }
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    use crate::app::NativeRouteRequest;
+    use crate::bgp::PeerKey;
+    use crate::router::mikrotik::{test_support::documented_snapshot, NativeRead};
+    use crate::router::RouterConfig;
+
+    fn config() -> RouterConfig {
+        RouterConfig {
+            id: Uuid::nil(),
+            vendor: RouterVendor::MikroTik,
+            hostname: "lab.invalid".into(),
+            username: "tester".into(),
+            mikrotik_instance: Some("blue".into()),
+            ..RouterConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn mikrotik_cache_service_processes_registration_controls_inline_in_order() {
+        let ssh = SshSessionManager::new(&[]);
+        let (events, mut event_rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let service = tokio::spawn(run_data_fetch_service(Arc::clone(&ssh), events, rx));
+        tx.send(FetchRequest::UpdateNativeRegistration(config()))
+            .unwrap();
+        // Generic refresh must see the registration just received and reject
+        // before any transport. If control handling were spawned it could race.
+        tx.send(FetchRequest::RefreshRouter(Uuid::nil())).unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(2), event_rx.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            matches!(event, AppEvent::NativeError(id, request, _) if id.is_nil() && request.is_nil())
+        );
+        assert_eq!(
+            ssh.get_config(Uuid::nil()).await.unwrap().vendor,
+            RouterVendor::MikroTik
+        );
+        tx.send(FetchRequest::RemoveNativeRegistration(Uuid::nil()))
+            .unwrap();
+        drop(tx);
+        service.await.unwrap();
+        assert!(ssh.get_config(Uuid::nil()).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn mikrotik_cache_native_drilldown_pins_source_identity_generation_and_registration() {
+        let config = config();
+        let ssh = SshSessionManager::new(&[config.clone()]);
+        let mut snapshot = documented_snapshot();
+        snapshot.registration = ssh.native_registration(config.id).await.unwrap();
+        let request = NativeRouteRequest {
+            router_id: config.id,
+            request: Uuid::new_v4(),
+            registration: snapshot.registration.clone(),
+            generation: snapshot.generation,
+            peer: PeerKey::RouterOsConnection {
+                instance: "blue".into(),
+                name: "peer-a".into(),
+            },
+            direction: PeerRouteDirection::Received,
+        };
+        let NativeRead::Available(routes) = native_peer_routes(&ssh, &request, &snapshot).await
+        else {
+            panic!("known stored routes")
+        };
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].as_path_str(), "65001,{65002,65003}");
+        let mut forged = request.clone();
+        forged.generation = Uuid::new_v4();
+        assert!(matches!(
+            native_peer_routes(&ssh, &forged, &snapshot).await,
+            NativeRead::Unavailable(_)
+        ));
+        let mut recreated = snapshot.clone();
+        recreated.peers[0].record.id = "*NEW".into();
+        assert!(matches!(
+            native_peer_routes(&ssh, &request, &recreated).await,
+            NativeRead::Unavailable(_)
+        ));
+        let mut replacement = config;
+        replacement.hostname = "replacement.invalid".into();
+        ssh.register_router(replacement).await;
+        assert!(matches!(
+            native_peer_routes(&ssh, &request, &snapshot).await,
+            NativeRead::Unavailable(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn mikrotik_management_generic_io_is_rejected_without_transport() {
+        let config = config();
+        let ssh = SshSessionManager::new(&[config.clone()]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        for request in [
+            FetchRequest::FetchPeerRoutes {
+                router_id: config.id,
+                ip: "192.0.2.2".into(),
+                dir: PeerRouteDirection::Received,
+            },
+            FetchRequest::FetchMtu {
+                router_id: config.id,
+                target: "192.0.2.2".parse().unwrap(),
+            },
+            FetchRequest::ApplyConfig {
+                router_id: config.id,
+                commands: vec!["synthetic-sensitive-command".into()],
+                description: "test".into(),
+            },
+        ] {
+            handle_request(Arc::clone(&ssh), tx.clone(), request).await;
+        }
+        assert!(
+            matches!(rx.try_recv().unwrap(), AppEvent::PeerRoutesError(_, _, _, error) if error.contains("native peer"))
+        );
+        assert!(
+            matches!(rx.try_recv().unwrap(), AppEvent::MtuProbeError(_, _, error) if error.contains("unavailable"))
+        );
+        assert!(
+            matches!(rx.try_recv().unwrap(), AppEvent::ConfigError { error, .. } if error.contains("raw CLI rejected") && !error.contains("synthetic-sensitive-command"))
+        );
+        handle_request(
+            Arc::clone(&ssh),
+            tx,
+            FetchRequest::FetchRouteMap {
+                router_id: config.id,
+                rm_name: "native-chain".into(),
+            },
+        )
+        .await;
+        assert!(rx.try_recv().is_err());
+        let mut backend = crate::router::RouterBackend::MikroTik(
+            crate::router::mikrotik::MikroTikBackend::new(&config, ssh),
+        );
+        assert!(backend.apply_config("raw commands").await.is_err());
+        assert!(backend.refresh().await.is_err());
+        assert!(backend.get_routes().await.is_err());
     }
 }

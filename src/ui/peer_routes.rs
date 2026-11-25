@@ -13,7 +13,10 @@ use ratatui::{
 
 // ─── Per-peer route drill-down ────────────────────────────────────────────────
 
-fn route_status_style(s: &RouteStatus) -> Style {
+fn route_status_style(status: &Option<RouteStatus>) -> Style {
+    let Some(s) = status else {
+        return Style::default().fg(C_DIM);
+    };
     match s {
         RouteStatus::BestExternal => Style::default()
             .fg(C_ESTABLISHED)
@@ -23,10 +26,14 @@ fn route_status_style(s: &RouteStatus) -> Style {
         RouteStatus::Internal => Style::default().fg(Color::LightBlue),
         RouteStatus::Suppressed => Style::default().fg(C_DIM),
         RouteStatus::History => Style::default().fg(C_DIM),
+        RouteStatus::Filtered | RouteStatus::Unreachable => Style::default().fg(Color::Red),
     }
 }
 
-fn route_origin_style(o: &RouteOrigin) -> Style {
+fn route_origin_style(origin: &Option<RouteOrigin>) -> Style {
+    let Some(o) = origin else {
+        return Style::default().fg(C_DIM);
+    };
     match o {
         RouteOrigin::Igp => Style::default().fg(C_ESTABLISHED),
         RouteOrigin::Egp => Style::default().fg(C_WARN),
@@ -43,6 +50,7 @@ pub fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
     let dir = view.direction;
     let routes = view.routes.clone();
     let error = view.error.clone();
+    let native = view.native_source.is_some();
 
     // Table area + 1-line hint bar
     let chunks = Layout::default()
@@ -57,6 +65,7 @@ pub fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
             r.len(),
             if r.len() == 1 { "" } else { "es" }
         ),
+        None if error.is_some() => " unavailable".into(),
         None => " fetching\u{2026}".to_string(),
     };
     let (rcv_label, adv_label) = if dir == PeerRouteDirection::Received {
@@ -129,7 +138,8 @@ pub fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .map(|r: &crate::bgp::BgpRoute| {
                 Row::new(vec![
-                    Cell::from(r.status.to_string()).style(route_status_style(&r.status)),
+                    Cell::from(crate::bgp::known_text(r.status.as_ref()))
+                        .style(route_status_style(&r.status)),
                     Cell::from(r.network.clone()),
                     Cell::from(r.next_hop.clone()),
                     Cell::from(
@@ -142,10 +152,16 @@ pub fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
                             .map(|m: u32| m.to_string())
                             .unwrap_or_else(|| "—".into()),
                     ),
-                    Cell::from(r.weight.to_string()),
+                    Cell::from(crate::bgp::known_text(r.weight)),
                     Cell::from(r.as_path_str()),
-                    Cell::from(r.origin.to_string()).style(route_origin_style(&r.origin)),
-                    Cell::from(r.communities.join(" ")),
+                    Cell::from(crate::bgp::known_text(r.origin.as_ref()))
+                        .style(route_origin_style(&r.origin)),
+                    Cell::from(
+                        r.communities
+                            .as_ref()
+                            .map(|c| c.join(" "))
+                            .unwrap_or_else(|| "N/A".into()),
+                    ),
                 ])
                 .height(1)
             })
@@ -207,37 +223,41 @@ pub fn draw_peer_route_view(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(Paragraph::new(dir_line), dir_area);
 
     // ── Hint bar ──────────────────────────────────────────────────────────────
-    let hint = Line::from(vec![
-        Span::styled(
-            " Enter/i",
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(":received  ", Style::default().fg(C_DIM)),
-        Span::styled(
-            "o",
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(":advertised  ", Style::default().fg(C_DIM)),
-        Span::styled(
-            "Tab",
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(":toggle  ", Style::default().fg(C_DIM)),
-        Span::styled(
-            "r",
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(":refresh  ", Style::default().fg(C_DIM)),
-        Span::styled(
-            "Esc",
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(":back  ", Style::default().fg(C_DIM)),
-        Span::styled(
-            "↑↓/jk",
-            Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(":navigate", Style::default().fg(C_DIM)),
-    ]);
+    let hint = if native {
+        Line::from(" Native cached stored routes only — not full pre-policy Adj-RIB-In. Advertisements unavailable. Esc:back")
+    } else {
+        Line::from(vec![
+            Span::styled(
+                " Enter/i",
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":received  ", Style::default().fg(C_DIM)),
+            Span::styled(
+                "o",
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":advertised  ", Style::default().fg(C_DIM)),
+            Span::styled(
+                "Tab",
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":toggle  ", Style::default().fg(C_DIM)),
+            Span::styled(
+                "r",
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":refresh  ", Style::default().fg(C_DIM)),
+            Span::styled(
+                "Esc",
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":back  ", Style::default().fg(C_DIM)),
+            Span::styled(
+                "↑↓/jk",
+                Style::default().fg(C_SELECTED).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(":navigate", Style::default().fg(C_DIM)),
+        ])
+    };
     f.render_widget(Paragraph::new(hint), chunks[1]);
 }

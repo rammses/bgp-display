@@ -53,7 +53,7 @@ impl CitrixVpxBackend {
             "{{ printf 'shell\\n'; sleep 1; printf '{}\\nexit\\nexit\\n'; }} | {}",
             escaped_cmd, ssh_part
         );
-        let raw = self.ssh.run_shell_pipe(self.config.id, &script).await?;
+        let raw = self.ssh.run_shell_pipe_for(&self.config, &script).await?;
         Ok(Self::strip_citrix_noise(&raw))
     }
 
@@ -64,7 +64,7 @@ impl CitrixVpxBackend {
             "{{ printf 'vtysh\\n'; sleep 1; printf '{}\\nexit\\nexit\\n'; }} | {}",
             escaped_cmd, ssh_part
         );
-        let raw = self.ssh.run_shell_pipe(self.config.id, &script).await?;
+        let raw = self.ssh.run_shell_pipe_for(&self.config, &script).await?;
         Ok(Self::strip_citrix_noise(&raw))
     }
 
@@ -210,15 +210,15 @@ impl CitrixVpxBackend {
                 peer.description = d.description;
                 peer.route_map_in = d.route_map_in;
                 peer.route_map_out = d.route_map_out;
-                peer.next_hop_self = d.next_hop_self;
-                peer.route_reflector_client = d.route_reflector_client;
+                peer.next_hop_self = Some(d.next_hop_self);
+                peer.route_reflector_client = Some(d.route_reflector_client);
                 peer.update_source = d.update_source;
-                peer.password_configured = d.password_configured;
+                peer.password_configured = Some(d.password_configured);
                 if d.hold_time > 0 {
-                    peer.hold_time = d.hold_time;
+                    peer.hold_time = Some(d.hold_time);
                 }
                 if d.keepalive > 0 {
-                    peer.keepalive = d.keepalive;
+                    peer.keepalive = Some(d.keepalive);
                 }
             }
         }
@@ -313,7 +313,7 @@ impl CitrixVpxBackend {
             format!("{{ printf 'vtysh\\n'; sleep 1; printf '{vtysh_cmds}exit\\n'; }} | {ssh_part}");
         let raw = self
             .ssh
-            .run_shell_pipe(self.config.id, &script)
+            .run_shell_pipe_for(&self.config, &script)
             .await
             .context("write_config: SSH shell pipe failed")?;
         let out = Self::strip_citrix_noise(&raw);

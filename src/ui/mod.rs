@@ -517,7 +517,10 @@ pub fn state_style(state: &crate::bgp::BgpState) -> Style {
 }
 
 /// Formats a large number with thousands separator.
-pub fn fmt_num(n: u64) -> String {
+pub fn fmt_num(n: impl Into<Option<u64>>) -> String {
+    let Some(n) = n.into() else {
+        return "N/A".into();
+    };
     let s = n.to_string();
     let mut result = String::new();
     for (i, c) in s.chars().rev().enumerate() {
@@ -527,4 +530,137 @@ pub fn fmt_num(n: u64) -> String {
         result.push(c);
     }
     result.chars().rev().collect()
+}
+
+#[cfg(test)]
+mod native_tests {
+    use super::*;
+    use crate::config::AppConfig;
+    use crate::db::RouterDb;
+    use crate::router::mikrotik::{test_support::documented_snapshot, NativeDiscovery};
+    use crate::router::{RouterConfig, RouterVendor};
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn native_app() -> App {
+        let config = RouterConfig {
+            id: uuid::Uuid::nil(),
+            vendor: RouterVendor::MikroTik,
+            hostname: "lab.invalid".into(),
+            username: "tester".into(),
+            mikrotik_instance: Some("blue".into()),
+            ..RouterConfig::default()
+        };
+        let mut app = App::new(
+            AppConfig {
+                routers: vec![config],
+                ..AppConfig::default()
+            },
+            RouterDb::in_memory().unwrap(),
+        );
+        app.request_native_refresh(uuid::Uuid::nil());
+        let mut snapshot = documented_snapshot();
+        snapshot.request = app.native_cache[&snapshot.router_id].latest_request;
+        app.handle_native_data(
+            snapshot.router_id,
+            snapshot.request,
+            NativeDiscovery::Snapshot(snapshot),
+        );
+        app
+    }
+
+    fn screen(app: &mut App) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(220, 45)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn mikrotik_unknowns_ui_renders_partial_observations_not_measured_down() {
+        let mut app = native_app();
+        let output = screen(&mut app);
+        assert!(output.contains("N/A"));
+        assert!(output.contains("partial"));
+        assert!(output.contains("Selected-main"));
+        app.current_tab = ActiveTab::Peers;
+        app.peer_table_state.select(Some(1));
+        let mut terminal = Terminal::new(TestBackend::new(220, 45)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let unknown_type = terminal
+            .backend()
+            .buffer()
+            .content
+            .windows(6)
+            .find(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>() == "Unknow")
+            .expect("unknown native session type must be visible");
+        assert_eq!(
+            unknown_type[0].fg, C_DIM,
+            "unknown AS must not receive a measured iBGP/eBGP color"
+        );
+        let output = screen(&mut app);
+        assert!(output.contains("Administrative disabled: true"));
+        assert!(output.contains("unobserved"));
+        assert!(output.contains("MTU unavailable"));
+        assert!(output.contains("Raw native observations"));
+    }
+
+    #[test]
+    fn mikrotik_unknowns_ui_native_flags_and_audit_warning_remain_visible() {
+        let mut app = native_app();
+        app.current_tab = ActiveTab::Routes;
+        let output = screen(&mut app);
+        assert!(output.contains("65001,{65002,65003}"));
+        assert!(output.contains("not full Adj-RIB-In"));
+        assert!(output.contains("Native flags/raw:"));
+        app.current_tab = ActiveTab::Config;
+        let output = screen(&mut app);
+        assert!(output.contains("other-protocol"));
+        assert!(output.contains("management unavailable"));
+        assert!(!output.contains("configure terminal"));
+    }
+
+    #[test]
+    fn mikrotik_unknowns_ui_metadata_is_sanitized_without_changing_source() {
+        let mut app = native_app();
+        let mut snapshot = documented_snapshot();
+        snapshot.inventory.connections[0]
+            .props
+            .insert("name".into(), serde_json::json!("bad\u{1b}[2J"));
+        snapshot.peers = crate::router::mikrotik::join_native_peers(
+            &snapshot.inventory,
+            "blue",
+            snapshot.generation,
+        )
+        .unwrap();
+        app.request_native_refresh(snapshot.router_id);
+        snapshot.request = app.native_cache[&snapshot.router_id].latest_request;
+        app.handle_native_data(
+            snapshot.router_id,
+            snapshot.request,
+            NativeDiscovery::Snapshot(snapshot),
+        );
+        app.current_tab = ActiveTab::Config;
+        let index = app
+            .native_view
+            .as_ref()
+            .unwrap()
+            .config_targets
+            .iter()
+            .position(|t| t.is_some())
+            .unwrap();
+        app.config_list_state.select(Some(index));
+        let output = screen(&mut app);
+        assert!(output.contains("Connection: blue / bad\\u{1b}[2J"));
+        let (_, crate::app::NativeConfigTarget::Connection(connection)) =
+            app.displayed_native_target().unwrap()
+        else {
+            panic!("connection target")
+        };
+        assert_eq!(connection.name, "bad\u{1b}[2J");
+    }
 }

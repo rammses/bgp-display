@@ -86,17 +86,36 @@ fn draw_summary_info(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(C_DIM),
         );
 
-        lines.push(Line::from(kv("  Router ID  ", s.router_id.to_string())));
-        lines.push(Line::from(kv("  Local AS   ", s.local_as.to_string())));
+        lines.push(Line::from(kv(
+            "  Router ID  ",
+            crate::bgp::known_text(s.router_id),
+        )));
+        lines.push(Line::from(kv(
+            "  Local AS   ",
+            crate::bgp::known_text(s.local_as),
+        )));
         lines.push(Line::from(kv("  Hostname   ", r.hostname.clone())));
         lines.push(Line::from(kv("  Vendor     ", r.vendor.to_string())));
-        lines.push(Line::from(kv("  Table Ver  ", s.table_version.to_string())));
+        lines.push(Line::from(kv(
+            "  Table Ver  ",
+            crate::bgp::known_text(s.table_version),
+        )));
         lines.push(Line::from(sep.clone()));
         lines.push(Line::from(kv("  Total Peers", s.peers.len().to_string())));
         lines.push(Line::from(vec![
             Span::raw("  Established  "),
             Span::styled(
-                s.established_count().to_string(),
+                if s.peers
+                    .iter()
+                    .any(|p| matches!(p.state, crate::bgp::BgpState::Unknown(_)))
+                {
+                    format!(
+                        "{} known (partial; unobserved present)",
+                        s.established_count()
+                    )
+                } else {
+                    s.established_count().to_string()
+                },
                 Style::default()
                     .fg(C_ESTABLISHED)
                     .add_modifier(Modifier::BOLD),
@@ -104,6 +123,21 @@ fn draw_summary_info(f: &mut Frame, app: &App, area: Rect) {
             Span::raw(format!(" / {}", s.peers.len())),
         ]));
         lines.push(Line::from(kv("  Total Pfx  ", fmt_num(s.total_prefixes()))));
+        if r.vendor == crate::router::RouterVendor::MikroTik {
+            lines.push(Line::from(
+                "  Selected-main observed peers only; unknown/unscoped audit rows excluded",
+            ));
+            lines.push(Line::from(
+                "  Native management / advertisements / MTU unavailable",
+            ));
+            if let Some(reason) = app
+                .native_cache
+                .get(&r.id)
+                .and_then(|c| c.stale_reason.as_deref())
+            {
+                lines.push(Line::from(format!("  STALE / N/A: {reason}")));
+            }
+        }
         lines.push(Line::from(kv(
             "  Fetched    ",
             s.fetched_at.format("%H:%M:%S UTC").to_string(),
@@ -149,7 +183,9 @@ fn draw_peer_sparkline(f: &mut Frame, app: &App, area: Rect) {
     )));
 
     for peer in &summary.peers {
-        let peer_type_style = if peer.remote_as == summary.local_as {
+        let peer_type_style = if peer.session_type() == "Unknown" {
+            Style::default().fg(C_DIM)
+        } else if peer.session_type() == "iBGP" {
             Style::default().fg(C_IBGP)
         } else {
             Style::default().fg(C_EBGP)
@@ -178,7 +214,12 @@ fn draw_peer_sparkline(f: &mut Frame, app: &App, area: Rect) {
         ]));
     }
 
-    if total > 0 {
+    if total > 0
+        && !summary
+            .peers
+            .iter()
+            .any(|peer| matches!(peer.state, crate::bgp::BgpState::Unknown(_)))
+    {
         let bar_width = (area.width.saturating_sub(20) as usize).min(40);
         let filled = (estab * bar_width).checked_div(total).unwrap_or(0);
         let empty = bar_width - filled;

@@ -60,12 +60,6 @@ fn peer_state_cell(state: &BgpState) -> Cell<'static> {
 }
 
 fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
-    let local_as = app
-        .current_summary
-        .as_ref()
-        .map(|s| s.local_as)
-        .unwrap_or(0);
-
     let router_name = app
         .selected_router()
         .map(|r| r.name.clone())
@@ -91,7 +85,9 @@ fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .map(|&idx| {
             let peer = &app.current_peers[idx];
-            let type_style = if peer.remote_as == local_as {
+            let type_style = if peer.session_type() == "Unknown" {
+                Style::default().fg(C_DIM)
+            } else if peer.session_type() == "iBGP" {
                 Style::default().fg(C_IBGP)
             } else {
                 Style::default().fg(C_EBGP)
@@ -99,7 +95,7 @@ fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
 
             Row::new(vec![
                 Cell::from(peer.neighbor_ip.to_string()),
-                Cell::from(peer.remote_as.to_string()),
+                Cell::from(crate::bgp::known_text(peer.remote_as)),
                 Cell::from(peer.session_type().to_string()).style(type_style),
                 peer_state_cell(&peer.state),
                 Cell::from(peer.uptime.as_deref().unwrap_or("—").to_string()),
@@ -124,7 +120,7 @@ fn draw_peer_table(f: &mut Frame, app: &mut App, area: Rect) {
     let widths = [
         Constraint::Length(16),
         Constraint::Length(9),
-        Constraint::Length(6),
+        Constraint::Length(7),
         Constraint::Length(12),
         Constraint::Length(10),
         Constraint::Length(7),
@@ -162,13 +158,9 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
         .and_then(|&idx| app.current_peers.get(idx));
 
     let mut lines: Vec<Line> = if let Some(p) = peer {
-        let type_color = if p.remote_as
-            == app
-                .current_summary
-                .as_ref()
-                .map(|s| s.local_as)
-                .unwrap_or(0)
-        {
+        let type_color = if p.session_type() == "Unknown" {
+            C_DIM
+        } else if p.session_type() == "iBGP" {
             C_IBGP
         } else {
             C_EBGP
@@ -195,18 +187,21 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
                 kv("Msg Sent ", fmt_num(p.msg_sent)),
             ]),
             Line::from(vec![
-                kv("  Hold Time ", format!("{}s", p.hold_time)),
-                Span::raw("   "),
-                kv("Keepalive ", format!("{}s", p.keepalive)),
+                kv(
+                    "  Hold Time ",
+                    p.hold_time
+                        .map(|n| format!("{n}s"))
+                        .unwrap_or_else(|| "N/A (native raw)".into()),
+                ),
                 Span::raw("   "),
                 kv(
-                    "Auth ",
-                    if p.password_configured {
-                        "Yes".into()
-                    } else {
-                        "No".into()
-                    },
+                    "Keepalive ",
+                    p.keepalive
+                        .map(|n| format!("{n}s"))
+                        .unwrap_or_else(|| "N/A (native raw)".into()),
                 ),
+                Span::raw("   "),
+                kv("Auth ", bool_str(p.password_configured).into()),
             ]),
             Line::from(vec![
                 kv("  NH-Self   ", bool_str(p.next_hop_self).to_string()),
@@ -232,14 +227,21 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
                         .unwrap_or_else(|| "—".into()),
                 ),
                 Span::raw("   "),
-                kv("Communities ", p.communities.join(" ")),
+                kv(
+                    "Communities ",
+                    if p.native_source.is_some() {
+                        "N/A (native raw)".into()
+                    } else {
+                        p.communities.join(" ")
+                    },
+                ),
             ]),
             Line::from(vec![
-                kv("  Resets    ", p.reset_count.to_string()),
+                kv("  Resets    ", crate::bgp::known_text(p.reset_count)),
                 Span::raw("   "),
-                kv("Notifs Sent ", p.notifs_sent.to_string()),
+                kv("Notifs Sent ", crate::bgp::known_text(p.notifs_sent)),
                 Span::raw("   "),
-                kv("Rcvd ", p.notifs_rcvd.to_string()),
+                kv("Rcvd ", crate::bgp::known_text(p.notifs_rcvd)),
             ]),
             {
                 let reason = p.last_reset_reason.clone().unwrap_or_else(|| "—".into());
@@ -258,6 +260,7 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
                 Span::raw("   "),
                 kv("MTU probe ", {
                     match &p.mtu_probe {
+                        None if p.native_source.is_some() => "N/A (native MTU unavailable)".into(),
                         None => "— (m to probe)".into(),
                         Some(MtuProbeState::Running) => "⏳ running…".into(),
                         Some(MtuProbeState::Ok(n)) => format!("✅ ≥{n} B"),
@@ -274,13 +277,28 @@ fn draw_peer_detail(f: &mut Frame, app: &App, area: Rect) {
         ))]
     };
 
+    if let Some(peer) = peer {
+        if let Some(source) = &peer.native_source {
+            lines.insert(
+                0,
+                Line::from(format!(
+                    "  Administrative disabled: {} — separate from runtime",
+                    crate::bgp::known_text(peer.admin_disabled)
+                )),
+            );
+            lines.push(Line::from(format!(
+                "  Raw native observations (unmapped values): {source}"
+            )));
+        }
+    }
+
     let peer_for_history = selected
         .and_then(|i| app.peer_indices.get(i))
         .and_then(|&idx| app.current_peers.get(idx));
 
     if let Some(p) = peer_for_history {
         if let Some(router) = app.selected_router() {
-            let key = (router.id, p.neighbor_ip.clone());
+            let key = (router.id, p.identity());
             if let Some(history) = app.peer_state_history.get(&key) {
                 if !history.is_empty() {
                     lines.push(Line::from(Span::styled(
@@ -329,11 +347,11 @@ fn kv(key: &str, val: String) -> Span<'static> {
     Span::raw(format!("{key}{val}"))
 }
 
-fn bool_str(b: bool) -> &'static str {
-    if b {
-        "Yes"
-    } else {
-        "No"
+fn bool_str(b: Option<bool>) -> &'static str {
+    match b {
+        Some(true) => "Yes",
+        Some(false) => "No",
+        None => "N/A",
     }
 }
 

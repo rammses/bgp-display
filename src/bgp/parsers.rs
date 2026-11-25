@@ -70,29 +70,32 @@ pub fn parse_cisco_bgp_summary(output: &str, router_id: IpAddr, local_as: u32) -
                 .unwrap_or(0);
 
             peers.push(BgpPeer {
+                key: None,
+                admin_disabled: None,
+                native_source: None,
                 neighbor_ip,
-                remote_as,
-                local_as,
+                remote_as: Some(remote_as),
+                local_as: Some(local_as),
                 state,
                 uptime: Some(uptime),
-                prefixes_received,
-                prefixes_advertised,
+                prefixes_received: Some(prefixes_received),
+                prefixes_advertised: Some(prefixes_advertised),
                 description: None,
                 update_source: None,
-                next_hop_self: false,
-                route_reflector_client: false,
-                password_configured: false,
-                msg_rcvd,
-                msg_sent,
-                hold_time: 90,
-                keepalive: 30,
+                next_hop_self: Some(false),
+                route_reflector_client: Some(false),
+                password_configured: Some(false),
+                msg_rcvd: Some(msg_rcvd),
+                msg_sent: Some(msg_sent),
+                hold_time: Some(90),
+                keepalive: Some(30),
                 communities: vec![],
                 route_map_in: None,
                 route_map_out: None,
-                reset_count: 0,
+                reset_count: Some(0),
                 last_reset_reason: None,
-                notifs_sent: 0,
-                notifs_rcvd: 0,
+                notifs_sent: Some(0),
+                notifs_rcvd: Some(0),
                 bfd_state: None,
                 mtu_probe: None,
             });
@@ -100,9 +103,9 @@ pub fn parse_cisco_bgp_summary(output: &str, router_id: IpAddr, local_as: u32) -
     }
 
     BgpSummary {
-        router_id,
-        local_as,
-        table_version,
+        router_id: Some(router_id),
+        local_as: Some(local_as),
+        table_version: Some(table_version),
         peers,
         fetched_at: Utc::now(),
     }
@@ -122,11 +125,11 @@ peerlink.4094         4      65101       120       122        0    0    0 00:01:
         let summary = parse_bgp_summary(output);
         assert_eq!(summary.peers.len(), 3);
         assert_eq!(summary.peers[0].neighbor_ip, "swp51");
-        assert_eq!(summary.peers[0].prefixes_received, 7);
+        assert_eq!(summary.peers[0].prefixes_received, Some(7));
         assert_eq!(summary.peers[1].neighbor_ip, "peerlink.4094");
         assert_eq!(summary.peers[1].state, BgpState::Active);
         assert_eq!(summary.peers[2].neighbor_ip, "10.0.0.2");
-        assert_eq!(summary.peers[2].prefixes_advertised, 5);
+        assert_eq!(summary.peers[2].prefixes_advertised, Some(5));
     }
 }
 
@@ -187,29 +190,32 @@ pub fn parse_a10_bgp_summary(output: &str) -> BgpSummary {
                 };
 
             peers.push(BgpPeer {
+                key: None,
+                admin_disabled: None,
+                native_source: None,
                 neighbor_ip,
-                remote_as,
-                local_as,
+                remote_as: Some(remote_as),
+                local_as: Some(local_as),
                 state,
                 uptime: Some(uptime),
-                prefixes_received,
-                prefixes_advertised,
+                prefixes_received: Some(prefixes_received),
+                prefixes_advertised: Some(prefixes_advertised),
                 description: None,
                 update_source: None,
-                next_hop_self: false,
-                route_reflector_client: false,
-                password_configured: false,
-                msg_rcvd,
-                msg_sent,
-                hold_time: 90,
-                keepalive: 30,
+                next_hop_self: Some(false),
+                route_reflector_client: Some(false),
+                password_configured: Some(false),
+                msg_rcvd: Some(msg_rcvd),
+                msg_sent: Some(msg_sent),
+                hold_time: Some(90),
+                keepalive: Some(30),
                 communities: vec![],
                 route_map_in: None,
                 route_map_out: None,
-                reset_count: 0,
+                reset_count: Some(0),
                 last_reset_reason: None,
-                notifs_sent: 0,
-                notifs_rcvd: 0,
+                notifs_sent: Some(0),
+                notifs_rcvd: Some(0),
                 bfd_state: None,
                 mtu_probe: None,
             });
@@ -217,9 +223,9 @@ pub fn parse_a10_bgp_summary(output: &str) -> BgpSummary {
     }
 
     BgpSummary {
-        router_id,
-        local_as,
-        table_version,
+        router_id: Some(router_id),
+        local_as: Some(local_as),
+        table_version: Some(table_version),
         peers,
         fetched_at: Utc::now(),
     }

@@ -9,22 +9,23 @@ impl RouterDb {
     pub fn load_all(&self) -> Result<Vec<RouterConfig>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, hostname, vendor, ssh_port, username,
-                    password_enc, local_as, router_id, vdom
+                    password_enc, local_as, router_id, vdom, mikrotik_instance
              FROM routers ORDER BY rowid",
         )?;
 
         let rows = stmt.query_map([], |row| {
             Ok((
-                row.get::<_, String>(0)?,         // id
-                row.get::<_, String>(1)?,         // name
-                row.get::<_, String>(2)?,         // hostname
-                row.get::<_, String>(3)?,         // vendor
-                row.get::<_, u16>(4)?,            // ssh_port
-                row.get::<_, String>(5)?,         // username
-                row.get::<_, Option<String>>(6)?, // password_enc
-                row.get::<_, Option<u32>>(7)?,    // local_as
-                row.get::<_, Option<String>>(8)?, // router_id
-                row.get::<_, Option<String>>(9)?, // vdom
+                row.get::<_, String>(0)?,          // id
+                row.get::<_, String>(1)?,          // name
+                row.get::<_, String>(2)?,          // hostname
+                row.get::<_, String>(3)?,          // vendor
+                row.get::<_, u16>(4)?,             // ssh_port
+                row.get::<_, String>(5)?,          // username
+                row.get::<_, Option<String>>(6)?,  // password_enc
+                row.get::<_, Option<u32>>(7)?,     // local_as
+                row.get::<_, Option<String>>(8)?,  // router_id
+                row.get::<_, Option<String>>(9)?,  // vdom
+                row.get::<_, Option<String>>(10)?, // mikrotik_instance
             ))
         })?;
 
@@ -41,6 +42,7 @@ impl RouterDb {
                 local_as,
                 router_id_s,
                 vdom,
+                mikrotik_instance,
             ) = row?;
 
             let password = if let Some(enc) = password_enc {
@@ -57,15 +59,7 @@ impl RouterDb {
 
             let id: uuid::Uuid = id_s.parse().unwrap_or_else(|_| uuid::Uuid::new_v4());
             let router_id = router_id_s.and_then(|s| s.parse().ok());
-            let vendor = match vendor_s.to_lowercase().as_str() {
-                "vyos" => RouterVendor::VyOs,
-                "cumulus" => RouterVendor::Cumulus,
-                "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
-                "pfsense" => RouterVendor::PfSense,
-                "fortigate" => RouterVendor::FortiGate,
-                "a10" => RouterVendor::A10,
-                _ => RouterVendor::Cisco,
-            };
+            let vendor = RouterVendor::from_config_name(&vendor_s).unwrap_or(RouterVendor::Cisco);
 
             routers.push(RouterConfig {
                 id,
@@ -78,6 +72,7 @@ impl RouterDb {
                 local_as,
                 router_id,
                 vdom,
+                mikrotik_instance,
             });
         }
         Ok(routers)
@@ -93,8 +88,8 @@ impl RouterDb {
         self.conn.execute(
             "INSERT INTO routers
                  (id, name, hostname, vendor, ssh_port, username,
-                  password_enc, local_as, router_id, vdom)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)
+                   password_enc, local_as, router_id, vdom, mikrotik_instance)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)
              ON CONFLICT(id) DO UPDATE SET
                  name         = excluded.name,
                  hostname     = excluded.hostname,
@@ -104,7 +99,8 @@ impl RouterDb {
                  password_enc = excluded.password_enc,
                  local_as     = excluded.local_as,
                  router_id    = excluded.router_id,
-                 vdom         = excluded.vdom",
+                 vdom         = excluded.vdom,
+                 mikrotik_instance = excluded.mikrotik_instance",
             params![
                 r.id.to_string(),
                 r.name,
@@ -116,6 +112,7 @@ impl RouterDb {
                 r.local_as,
                 router_id_s,
                 r.vdom,
+                r.mikrotik_instance,
             ],
         )?;
         Ok(())

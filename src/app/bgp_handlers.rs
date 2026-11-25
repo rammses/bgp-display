@@ -8,10 +8,49 @@ use uuid::Uuid;
 impl App {
     /// Called when a BGP fetch succeeds.
     pub fn handle_bgp_data(&mut self, id: Uuid, summary: BgpSummary, rendered: String) {
+        if self
+            .all_routers
+            .iter()
+            .any(|r| r.id == id && r.vendor == crate::router::RouterVendor::MikroTik)
+        {
+            return;
+        }
         self.router_status.insert(id, ConnectionStatus::Connected);
 
         let is_selected = self.selected_router().map(|r| r.id) == Some(id);
 
+        self.record_peer_transitions(id, &summary);
+
+        // Check if the data actually changed compared to the cache
+        let data_changed = self
+            .bgp_cache
+            .get(&id)
+            .map(|cached| !cached.summary.content_eq(&summary) || cached.config != rendered)
+            .unwrap_or(true);
+
+        let entry = self.bgp_cache.entry(id).or_insert_with(|| BgpCache {
+            summary: summary.clone(),
+            peers: vec![],
+            routes: vec![],
+            config: String::new(),
+        });
+        entry.summary = summary.clone();
+        entry.peers = summary.peers.clone();
+        entry.config = rendered.clone();
+        if is_selected {
+            if !data_changed {
+                return;
+            }
+            if self.current_tab == ActiveTab::Config && !self.config_lines.is_empty() {
+                self.pending_bgp_update = Some((id, summary, rendered));
+                self.has_pending_update = true;
+                return;
+            }
+            self.apply_bgp_update(id, summary, rendered);
+        }
+    }
+
+    pub(crate) fn record_peer_transitions(&mut self, id: Uuid, summary: &BgpSummary) {
         let router_name = self
             .routers
             .iter()
@@ -21,13 +60,13 @@ impl App {
 
         // Detect peer state transitions by comparing against cached peers.
         // Collect changes first to avoid borrow conflicts with self.log() etc.
-        let mut state_changes: Vec<(String, String, String, bool, bool)> = Vec::new();
+        let mut state_changes = Vec::new();
         if let Some(cached) = self.bgp_cache.get(&id) {
             for new_peer in &summary.peers {
                 if let Some(old_peer) = cached
                     .peers
                     .iter()
-                    .find(|p| p.neighbor_ip == new_peer.neighbor_ip)
+                    .find(|p| p.identity() == new_peer.identity())
                 {
                     if let Some((old_state, new_state)) = new_peer.state_changed_from(old_peer) {
                         let is_down = old_state == crate::bgp::BgpState::Established
@@ -35,6 +74,7 @@ impl App {
                         let is_up = old_state != crate::bgp::BgpState::Established
                             && new_state == crate::bgp::BgpState::Established;
                         state_changes.push((
+                            new_peer.identity(),
                             new_peer.neighbor_ip.clone(),
                             old_state.to_string(),
                             new_state.to_string(),
@@ -45,7 +85,7 @@ impl App {
                 }
             }
         }
-        for (ip, old_s, new_s, is_down, is_up) in state_changes {
+        for (peer, ip, old_s, new_s, is_down, is_up) in state_changes {
             let arrow = if is_down {
                 "▼ DOWN"
             } else if is_up {
@@ -57,7 +97,7 @@ impl App {
             self.log(&msg);
             self.conn_log(&msg);
 
-            let key = (id, ip.clone());
+            let key = (id, peer);
             let history = self.peer_state_history.entry(key).or_default();
             history.push_back((chrono::Utc::now(), old_s.clone(), new_s.clone()));
             while history.len() > 100 {
@@ -70,41 +110,6 @@ impl App {
             } else if is_up {
                 self.set_status(format!("✓ Peer {ip} on {router_name} is Established"));
             }
-        }
-
-        // Check if the data actually changed compared to the cache
-        let data_changed = self
-            .bgp_cache
-            .get(&id)
-            .map(|cached| !cached.summary.content_eq(&summary) || cached.config != rendered)
-            .unwrap_or(true); // no cache = treat as changed
-
-        // Always update the per-router cache
-        let entry = self.bgp_cache.entry(id).or_insert_with(|| BgpCache {
-            summary: summary.clone(),
-            peers: vec![],
-            routes: vec![],
-            config: String::new(),
-        });
-        entry.summary = summary.clone();
-        entry.peers = summary.peers.clone();
-        entry.config = rendered.clone();
-
-        if is_selected {
-            if !data_changed {
-                // Data hasn't changed — don't disturb the user at all
-                return;
-            }
-
-            // If user is actively browsing the Config tab, defer the update
-            if self.current_tab == ActiveTab::Config && !self.config_lines.is_empty() {
-                self.pending_bgp_update = Some((id, summary, rendered));
-                self.has_pending_update = true;
-                return;
-            }
-
-            // Otherwise apply immediately
-            self.apply_bgp_update(id, summary, rendered);
         }
     }
 
@@ -130,6 +135,9 @@ impl App {
 
     /// Accept pending BGP update and apply it to the displayed state.
     pub fn accept_pending_update(&mut self) {
+        if let Some(view) = self.pending_native_view.take() {
+            self.apply_native_presentation(view);
+        }
         if let Some((id, summary, rendered)) = self.pending_bgp_update.take() {
             self.apply_bgp_update(id, summary, rendered);
         }
@@ -148,6 +156,7 @@ impl App {
 
     /// Dismiss pending update notification without applying.
     pub fn dismiss_pending_update(&mut self) {
+        self.pending_native_view = None;
         self.pending_bgp_update = None;
         self.pending_route_update = None;
         self.has_pending_update = false;
@@ -155,6 +164,13 @@ impl App {
 
     /// Called when a route table fetch completes.
     pub fn handle_route_data(&mut self, id: Uuid, routes: Vec<BgpRoute>) {
+        if self
+            .all_routers
+            .iter()
+            .any(|r| r.id == id && r.vendor == crate::router::RouterVendor::MikroTik)
+        {
+            return;
+        }
         let is_selected = self.selected_router().map(|r| r.id) == Some(id);
 
         // Check if routes actually changed
@@ -212,6 +228,9 @@ impl App {
         let Some(router) = self.selected_router() else {
             return;
         };
+        if router.vendor == crate::router::RouterVendor::MikroTik {
+            return;
+        }
         self.send_fetch(FetchRequest::FetchRouteMap {
             router_id: router.id,
             rm_name,
@@ -220,6 +239,14 @@ impl App {
 
     /// Called when the selected config line changes — triggers route-map fetch if applicable.
     pub fn on_config_nav(&mut self) {
+        if self.is_native_selected() {
+            // Selection is metadata-only, paired with the displayed snapshot.
+            self.config_rm_name = None;
+            self.config_routemap = None;
+            self.config_pl_name = None;
+            self.routemap_fetch_queued = None;
+            return;
+        }
         let idx = match self.config_list_state.selected() {
             Some(i) => i,
             None => return,

@@ -46,7 +46,7 @@ impl A10Backend {
 
     async fn run_cli(&self, cmd: &str) -> Result<String> {
         let script = format!("{cmd}\nexit\n");
-        let raw = self.ssh.run_piped(self.config.id, &script).await?;
+        let raw = self.ssh.run_piped_for(&self.config, &script).await?;
         Ok(strip_a10_noise(&raw))
     }
 
@@ -108,15 +108,15 @@ impl A10Backend {
                 peer.description = d.description;
                 peer.route_map_in = d.route_map_in;
                 peer.route_map_out = d.route_map_out;
-                peer.next_hop_self = d.next_hop_self;
-                peer.route_reflector_client = d.route_reflector_client;
+                peer.next_hop_self = Some(d.next_hop_self);
+                peer.route_reflector_client = Some(d.route_reflector_client);
                 peer.update_source = d.update_source;
-                peer.password_configured = d.password_configured;
+                peer.password_configured = Some(d.password_configured);
                 if d.hold_time > 0 {
-                    peer.hold_time = d.hold_time;
+                    peer.hold_time = Some(d.hold_time);
                 }
                 if d.keepalive > 0 {
-                    peer.keepalive = d.keepalive;
+                    peer.keepalive = Some(d.keepalive);
                 }
             }
         }
@@ -176,7 +176,7 @@ impl A10Backend {
 
         let raw = self
             .ssh
-            .run_piped(self.config.id, &script)
+            .run_piped_for(&self.config, &script)
             .await
             .context("write_config: A10 CLI pipe failed")?;
         let out = strip_a10_noise(&raw);

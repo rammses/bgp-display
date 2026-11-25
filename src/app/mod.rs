@@ -1,6 +1,6 @@
 use crate::{
     bgp::{
-        BgpPeer, BgpRoute, BgpSummary, CommunityListEntry, NeighborDraft, PeerTemplate,
+        BgpPeer, BgpRoute, BgpSummary, CommunityListEntry, NeighborDraft, PeerKey, PeerTemplate,
         PrefixListEntry, RouteMapEntry,
     },
     config::AppConfig,
@@ -17,6 +17,7 @@ mod bgp_handlers;
 mod filters;
 mod helpers;
 mod keys;
+mod mikrotik;
 mod peer_actions;
 mod policy_editors;
 mod projects;
@@ -30,6 +31,7 @@ mod wizard_keys;
 pub(crate) use helpers::truncate_error;
 pub use helpers::{apply_buf_to_draft, editor_field_value};
 pub use keys::handle_key;
+pub(crate) use mikrotik::native_stored_peer_routes;
 pub use types::*;
 
 // ─── App State ────────────────────────────────────────────────────────────────
@@ -51,6 +53,9 @@ pub struct App {
 
     // Per-router BGP data cache (kept across router switches)
     pub bgp_cache: HashMap<Uuid, BgpCache>,
+    pub native_cache: HashMap<Uuid, NativeCache>,
+    pub native_view: Option<NativePresentation>,
+    pub pending_native_view: Option<NativePresentation>,
 
     // BGP data for the currently selected router
     pub current_summary: Option<BgpSummary>,
@@ -131,6 +136,8 @@ pub struct App {
 
     // Background BGP refresh for all connected routers (~30 s)
     bgp_refresh_tick: u16,
+    // Native timing is independent of legacy tab keys that accelerate refresh.
+    native_refresh_tick: u16,
 
     // Debounced route-map SSH fetch — set in on_config_nav(), drained once per tick
     routemap_fetch_queued: Option<String>,
@@ -225,7 +232,7 @@ pub struct App {
     // Peer state transition history: (router_id, peer_ip) → deque of (timestamp, old_state, new_state)
     #[allow(clippy::type_complexity)]
     pub peer_state_history:
-        HashMap<(Uuid, String), VecDeque<(chrono::DateTime<chrono::Utc>, String, String)>>,
+        HashMap<(Uuid, PeerKey), VecDeque<(chrono::DateTime<chrono::Utc>, String, String)>>,
 
     // Clone neighbor to another router
     pub clone_target_router: Option<usize>,
@@ -264,6 +271,9 @@ impl App {
             router_status: HashMap::new(),
             ping_stats: HashMap::new(),
             bgp_cache: HashMap::new(),
+            native_cache: HashMap::new(),
+            native_view: None,
+            pending_native_view: None,
             current_summary: None,
             current_peers: vec![],
             current_routes: vec![],
@@ -314,6 +324,7 @@ impl App {
             fetch_tx: None,
             ping_tick: 0,
             bgp_refresh_tick: 0,
+            native_refresh_tick: 0,
             routemap_fetch_queued: None,
             pending_bgp_update: None,
             pending_route_update: None,
@@ -422,6 +433,9 @@ impl App {
 
     #[allow(dead_code)]
     pub fn apply_template_to_draft(&mut self, template_idx: usize) {
+        if self.reject_native_management() {
+            return;
+        }
         let template = match self.peer_templates.get(template_idx) {
             Some(t) => t.clone(),
             None => return,
@@ -460,6 +474,7 @@ impl App {
                 username: r.username.clone(),
                 local_as: r.local_as,
                 vdom: r.vdom.clone(),
+                mikrotik_instance: r.mikrotik_instance.clone(),
             })
             .collect();
 
@@ -512,26 +527,14 @@ impl App {
         let mut projects_added = 0u32;
         let mut neighbors_added = 0u32;
         let mut templates_added = 0u32;
-
-        let db = self
-            .router_db
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("no database"))?;
+        anyhow::ensure!(self.router_db.is_some(), "no database");
 
         // Import routers (skip if name already exists)
         for er in &data.routers {
             if self.all_routers.iter().any(|r| r.name == er.name) {
                 continue;
             }
-            let vendor = match er.vendor.to_lowercase().as_str() {
-                "vyos" => RouterVendor::VyOs,
-                "cumulus" => RouterVendor::Cumulus,
-                "citrixvpx" | "citrix" => RouterVendor::CitrixVpx,
-                "pfsense" => RouterVendor::PfSense,
-                "fortigate" => RouterVendor::FortiGate,
-                "a10" => RouterVendor::A10,
-                _ => RouterVendor::Cisco,
-            };
+            let vendor = RouterVendor::from_config_name(&er.vendor).unwrap_or(RouterVendor::Cisco);
             let rc = RouterConfig {
                 id: Uuid::new_v4(),
                 name: er.name.clone(),
@@ -543,11 +546,27 @@ impl App {
                 local_as: er.local_as,
                 router_id: None,
                 vdom: er.vdom.clone(),
+                mikrotik_instance: er.mikrotik_instance.clone(),
             };
-            db.upsert(&rc)?;
-            self.all_routers.push(rc);
+            self.router_db
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("no database"))?
+                .upsert(&rc)?;
+            self.all_routers.push(rc.clone());
+            if rc.vendor == RouterVendor::MikroTik {
+                // Import may fail on a later row/project/template. Every native
+                // row already persisted must still have its ordered registration.
+                self.invalidate_native(rc.id);
+                self.send_fetch(FetchRequest::UpdateNativeRegistration(rc.clone()));
+                self.request_native_refresh(rc.id);
+            }
             routers_added += 1;
         }
+
+        let db = self
+            .router_db
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("no database"))?;
 
         // Import projects (skip if name already exists)
         for ep in &data.projects {
@@ -575,6 +594,9 @@ impl App {
                 Some(r) => r.clone(),
                 None => continue,
             };
+            if router.vendor == RouterVendor::MikroTik {
+                continue;
+            }
             let draft = NeighborDraft {
                 router_id: Some(router.id),
                 neighbor_ip: en.neighbor_ip.clone(),

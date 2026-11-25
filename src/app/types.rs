@@ -1,5 +1,8 @@
-use crate::bgp::{BgpPeer, BgpRoute, BgpSummary};
+use crate::bgp::{BgpPeer, BgpRoute, BgpSummary, PeerKey, PeerRouteDirection};
+use crate::router::mikrotik::{MikroTikSnapshot, NativeConnectionRef};
+use crate::ssh::NativeRegistration;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use uuid::Uuid;
 
 // ─── Editor Mode ──────────────────────────────────────────────────────────────
@@ -22,9 +25,16 @@ pub enum ProjectEditorMode {
 
 /// Displayable field labels for the router editor form.
 pub const EDITOR_FIELDS: &[&str] = &[
-    "Name", "Hostname", "Port", "Username", "Password", "Vendor", "VDOM",
+    "Name",
+    "Hostname",
+    "Port",
+    "Username",
+    "Password",
+    "Vendor",
+    "VDOM",
+    "BGP Instance",
 ];
-pub const EDITOR_NFIELDS: usize = 7;
+pub const EDITOR_NFIELDS: usize = 8;
 
 // ─── Filter Mode ─────────────────────────────────────────────────────────────
 
@@ -138,6 +148,51 @@ pub struct BgpCache {
     pub config: String,
 }
 
+pub struct NativeCache {
+    pub snapshot: Option<Arc<MikroTikSnapshot>>,
+    pub discovered_instances: Option<Vec<String>>,
+    pub latest_request: Uuid,
+    pub stale_reason: Option<String>,
+}
+
+impl NativeCache {
+    pub fn accepts(&self, request: Uuid) -> bool {
+        !request.is_nil() && self.latest_request == request
+    }
+
+    pub fn accept_snapshot(&mut self, request: Uuid, snapshot: Arc<MikroTikSnapshot>) -> bool {
+        if !self.accepts(request) || snapshot.request != request {
+            return false;
+        }
+        self.snapshot = Some(snapshot);
+        self.discovered_instances = None;
+        self.stale_reason = None;
+        true
+    }
+}
+
+#[derive(Clone)]
+pub struct NativePresentation {
+    pub snapshot: Arc<MikroTikSnapshot>,
+    pub config_targets: Vec<Option<NativeConfigTarget>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NativeConfigTarget {
+    Connection(NativeConnectionRef),
+    Chain(String),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeRouteRequest {
+    pub router_id: Uuid,
+    pub request: Uuid,
+    pub registration: NativeRegistration,
+    pub generation: Uuid,
+    pub peer: PeerKey,
+    pub direction: PeerRouteDirection,
+}
+
 // ─── Per-router ping stats ──────────────────────────────────────────────────
 
 const PING_HISTORY_LEN: usize = 30;
@@ -222,4 +277,6 @@ pub struct PeerRouteView {
     pub direction: crate::bgp::PeerRouteDirection,
     pub routes: Option<Vec<BgpRoute>>,
     pub error: Option<String>,
+    pub native_request: Option<NativeRouteRequest>,
+    pub native_source: Option<Arc<MikroTikSnapshot>>,
 }

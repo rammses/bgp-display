@@ -31,10 +31,16 @@ impl App {
         // Clear any pending update since user is explicitly reloading/switching
         self.pending_bgp_update = None;
         self.pending_route_update = None;
+        self.pending_native_view = None;
+        self.native_view = None;
         self.has_pending_update = false;
 
         if let Some(router) = self.selected_router() {
             let rid = router.id;
+            if router.vendor == crate::router::RouterVendor::MikroTik {
+                self.reload_native_selected(rid);
+                return;
+            }
             // Instantly display cached data if available
             if let Some(cached) = self.bgp_cache.get(&rid) {
                 self.current_summary = Some(cached.summary.clone());
@@ -64,9 +70,14 @@ impl App {
     }
 
     /// Request a BGP refresh for the currently selected router via the fetch service.
-    pub fn request_refresh_selected(&self) {
+    pub fn request_refresh_selected(&mut self) {
         if let Some(router) = self.selected_router() {
-            self.send_fetch(FetchRequest::RefreshRouter(router.id));
+            let id = router.id;
+            if router.vendor == crate::router::RouterVendor::MikroTik {
+                self.request_native_refresh(id);
+            } else {
+                self.send_fetch(FetchRequest::RefreshRouter(id));
+            }
         }
     }
 
@@ -83,7 +94,12 @@ impl App {
             self.bgp_refresh_tick = self.bgp_refresh_tick.wrapping_add(1);
             if self.bgp_refresh_tick >= 150 {
                 self.bgp_refresh_tick = 0;
-                self.request_refresh_all_connected();
+                self.request_refresh_all_connected(false);
+            }
+            self.native_refresh_tick = self.native_refresh_tick.wrapping_add(1);
+            if self.native_refresh_tick >= 150 {
+                self.native_refresh_tick = 0;
+                self.request_refresh_all_connected(true);
             }
         }
 
@@ -92,15 +108,32 @@ impl App {
         }
     }
 
-    fn request_refresh_all_connected(&self) {
+    fn request_refresh_all_connected(&mut self, native: bool) {
         let ids: Vec<Uuid> = self
             .routers
             .iter()
             .filter(|r| self.router_status.get(&r.id) == Some(&ConnectionStatus::Connected))
+            .filter(|r| (r.vendor == crate::router::RouterVendor::MikroTik) == native)
             .map(|r| r.id)
             .collect();
-        if !ids.is_empty() {
-            self.send_fetch(FetchRequest::RefreshMany(ids));
+        self.request_refresh_ids(ids);
+    }
+
+    pub fn request_refresh_ids(&mut self, ids: Vec<Uuid>) {
+        let mut legacy = Vec::new();
+        for id in ids {
+            if self
+                .all_routers
+                .iter()
+                .any(|r| r.id == id && r.vendor == crate::router::RouterVendor::MikroTik)
+            {
+                self.request_native_refresh(id);
+            } else {
+                legacy.push(id);
+            }
+        }
+        if !legacy.is_empty() {
+            self.send_fetch(FetchRequest::RefreshMany(legacy));
         }
     }
 
@@ -156,7 +189,15 @@ impl App {
         self.router_status.insert(id, new_status);
 
         if came_online {
-            self.send_fetch(FetchRequest::RefreshRouter(id));
+            if self
+                .all_routers
+                .iter()
+                .any(|r| r.id == id && r.vendor == crate::router::RouterVendor::MikroTik)
+            {
+                self.request_native_refresh(id);
+            } else {
+                self.send_fetch(FetchRequest::RefreshRouter(id));
+            }
         }
     }
 }

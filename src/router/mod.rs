@@ -85,6 +85,23 @@ pub enum RouterVendor {
     PfSense,
     FortiGate,
     A10,
+    MikroTik,
+}
+
+impl RouterVendor {
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        match name.to_lowercase().as_str() {
+            "cisco" => Some(Self::Cisco),
+            "vyos" => Some(Self::VyOs),
+            "cumulus" => Some(Self::Cumulus),
+            "citrixvpx" | "citrix" => Some(Self::CitrixVpx),
+            "pfsense" => Some(Self::PfSense),
+            "fortigate" => Some(Self::FortiGate),
+            "a10" => Some(Self::A10),
+            "mikrotik" => Some(Self::MikroTik),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for RouterVendor {
@@ -97,13 +114,14 @@ impl std::fmt::Display for RouterVendor {
             RouterVendor::PfSense => write!(f, "PfSense"),
             RouterVendor::FortiGate => write!(f, "FortiGate"),
             RouterVendor::A10 => write!(f, "A10"),
+            RouterVendor::MikroTik => write!(f, "MikroTik"),
         }
     }
 }
 
 // ─── Router Configuration ─────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouterConfig {
     pub id: Uuid,
     pub name: String,
@@ -117,6 +135,8 @@ pub struct RouterConfig {
     pub router_id: Option<IpAddr>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vdom: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mikrotik_instance: Option<String>,
 }
 
 impl Default for RouterConfig {
@@ -132,6 +152,7 @@ impl Default for RouterConfig {
             local_as: None,
             router_id: None,
             vdom: None,
+            mikrotik_instance: None,
         }
     }
 }
@@ -187,6 +208,7 @@ pub enum RouterBackend {
     Cumulus(cumulus::CumulusBackend),
     CitrixVpx(citrix::CitrixVpxBackend),
     PfSense(pfsense::PfSenseBackend),
+    MikroTik(mikrotik::MikroTikBackend),
 }
 
 #[allow(dead_code)]
@@ -198,6 +220,7 @@ impl RouterBackend {
             RouterBackend::Cumulus(b) => b.status(),
             RouterBackend::CitrixVpx(b) => b.status(),
             RouterBackend::PfSense(b) => b.status(),
+            RouterBackend::MikroTik(b) => b.status(),
         }
     }
 
@@ -208,6 +231,7 @@ impl RouterBackend {
             RouterBackend::Cumulus(b) => b.connect().await,
             RouterBackend::CitrixVpx(b) => b.connect().await,
             RouterBackend::PfSense(b) => b.connect().await,
+            RouterBackend::MikroTik(b) => b.connect().await,
         }
     }
 
@@ -218,6 +242,7 @@ impl RouterBackend {
             RouterBackend::Cumulus(b) => b.disconnect().await,
             RouterBackend::CitrixVpx(b) => b.disconnect().await,
             RouterBackend::PfSense(b) => b.disconnect().await,
+            RouterBackend::MikroTik(b) => b.disconnect().await,
         }
     }
 
@@ -228,6 +253,7 @@ impl RouterBackend {
             RouterBackend::Cumulus(b) => b.refresh().await,
             RouterBackend::CitrixVpx(b) => b.refresh().await,
             RouterBackend::PfSense(b) => b.refresh().await,
+            RouterBackend::MikroTik(_) => anyhow::bail!("MikroTik requires tracked native refresh"),
         }
     }
 
@@ -238,6 +264,7 @@ impl RouterBackend {
             RouterBackend::Cumulus(b) => b.get_routes().await,
             RouterBackend::CitrixVpx(b) => b.get_routes().await,
             RouterBackend::PfSense(b) => b.get_routes().await,
+            RouterBackend::MikroTik(_) => anyhow::bail!("MikroTik requires scoped native routes"),
         }
     }
 
@@ -248,6 +275,7 @@ impl RouterBackend {
             RouterBackend::Cumulus(b) => b.apply_config(config).await,
             RouterBackend::CitrixVpx(b) => b.apply_config(config).await,
             RouterBackend::PfSense(b) => b.apply_config(config).await,
+            RouterBackend::MikroTik(_) => anyhow::bail!("MikroTik native management unavailable"),
         }
     }
 }

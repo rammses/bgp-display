@@ -9,16 +9,48 @@ use uuid::Uuid;
 
 use crate::events::AppEvent;
 use crate::logging::thresholds;
-use crate::router::{RouterConfig, SSH_MUX_CONTROL_PATH};
+use crate::router::{RouterConfig, RouterVendor, SSH_MUX_CONTROL_PATH};
 
 mod mikrotik;
 
-// Staged native consumers arrive in Tasks3–4; reassess these local allowances then.
-#[cfg_attr(not(test), allow(unused_imports))]
 pub use mikrotik::{
-    NativeCommand, NativeCommandKind, NativeEndpoint, NativeExecError, NativeExecutor,
-    NativeFuture, NativeLease, NativeRegistration,
+    NativeCommand, NativeCommandKind, NativeEndpoint, NativeExecutor, NativeLease,
+    NativeRegistration,
 };
+#[cfg_attr(
+    not(test),
+    expect(
+        unused_imports,
+        reason = "retained public native executor error/future contract for staged mutation consumers"
+    )
+)]
+pub use mikrotik::{NativeExecError, NativeFuture};
+
+/// Native probes validate the decoded envelope's data, not stdout/mux success.
+pub(crate) async fn probe_native<E: NativeExecutor>(io: &E) -> Result<()> {
+    let request = Uuid::new_v4();
+    let quoted = crate::router::mikrotik::ros_string(&request.to_string());
+    let script = format!(":local mtresult {{\"request\"={quoted};\"ok\"=true;\"data\"=\"ok\"}}; :put [:serialize value=$mtresult to=json options=json.no-string-conversion]");
+    let command = NativeCommand::checked(request, "native-probe", NativeCommandKind::Read, script)?;
+    let value = io.exec(command).await?;
+    anyhow::ensure!(value.as_str() == Some("ok"), "native-probe-data");
+    Ok(())
+}
+
+#[derive(Clone)]
+struct ProbeTarget {
+    config: RouterConfig,
+    registration: NativeRegistration,
+}
+
+// Borrowed invocation data only, never Debug-rendered (stdin/scripts may contain
+// credentials). This is shared by real execution and external-I/O-only tests.
+#[derive(Clone, Copy)]
+enum LegacyOperation<'a> {
+    Command(&'a str),
+    Piped { data: &'a str, timeout: Duration },
+    ShellPipe(&'a str),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionState {
@@ -27,11 +59,145 @@ pub enum SessionState {
     Dead(String),
 }
 
+#[cfg(test)]
+mod monitoring_tests {
+    use super::*;
+    use crate::router::mikrotik::test_support::{Reply, TranscriptExecutor};
+    use crate::router::RouterVendor;
+
+    #[tokio::test]
+    async fn mikrotik_warm_requires_checked_json_ok_data() {
+        let io = TranscriptExecutor::new(vec![Reply::Data(serde_json::json!("ok"))]);
+        probe_native(&io).await.unwrap();
+        assert_eq!(io.seen_labels(), vec!["native-probe"]);
+        assert_eq!(io.mutation_attempts(), 0);
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!({"data":"ok"}),
+            serde_json::json!("not-ok"),
+        ] {
+            let io = TranscriptExecutor::new(vec![Reply::Data(value)]);
+            assert!(probe_native(&io).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn mikrotik_warm_vendor_branch_for_initial_health_and_rewarm_is_native_only() {
+        let config = RouterConfig {
+            vendor: RouterVendor::MikroTik,
+            ..RouterConfig::default()
+        };
+        let id = config.id;
+        let manager = SshSessionManager::new(&[config]);
+        let io = Arc::new(TranscriptExecutor::new(vec![
+            Reply::Data(serde_json::json!("ok")),
+            Reply::Data(serde_json::json!("ok")),
+            Reply::Data(serde_json::json!("ok")),
+        ]));
+        for health in [false, true, false] {
+            let target = manager.probe_targets().await.pop().unwrap();
+            let expected = target.registration.clone();
+            let probing = Arc::clone(&manager);
+            let io = Arc::clone(&io);
+            let result = manager
+                .run_probe_with(target, |cfg, token| async move {
+                    probing
+                        .probe_target_with(
+                            cfg,
+                            token,
+                            health,
+                            |lease| async move {
+                                assert_eq!(lease.registration(), &expected);
+                                probe_native(io.as_ref()).await
+                            },
+                            |_, _| async {
+                                panic!("native probe must never use legacy echo or mux")
+                            },
+                        )
+                        .await
+                })
+                .await;
+            assert!(result.unwrap().1.is_ok());
+            assert_eq!(
+                manager.sessions.read().await[&id].state,
+                SessionState::Ready
+            );
+        }
+        assert_eq!(io.seen_labels().len(), 3);
+        assert_eq!(io.mutation_attempts(), 0);
+    }
+
+    #[tokio::test]
+    async fn mikrotik_warm_late_result_cannot_mark_re_registered_vendor_ready() {
+        let config = RouterConfig {
+            vendor: RouterVendor::MikroTik,
+            ..RouterConfig::default()
+        };
+        let id = config.id;
+        let manager = SshSessionManager::new(&[config.clone()]);
+        let target = manager.probe_targets().await.pop().unwrap();
+        let original = target.registration.clone();
+        let io = TranscriptExecutor::new(vec![Reply::Data(serde_json::json!("ok"))]);
+        let probing = Arc::clone(&manager);
+        let result = manager
+            .run_probe_with(target, |cfg, token| async move {
+                assert_eq!(cfg.id, id);
+                assert_eq!(token, original);
+                let mut replacement = config;
+                replacement.vendor = RouterVendor::Cisco;
+                probing.register_router(replacement).await;
+                probe_native(&io).await
+            })
+            .await;
+        assert!(result.is_none());
+        assert_eq!(
+            manager.sessions.read().await[&id].state,
+            SessionState::Warming
+        );
+    }
+
+    #[tokio::test]
+    async fn mikrotik_warm_queued_lease_never_retargets_after_registration_change() {
+        let config = RouterConfig {
+            vendor: RouterVendor::MikroTik,
+            hostname: "lab.invalid".into(),
+            ..RouterConfig::default()
+        };
+        let id = config.id;
+        let manager = SshSessionManager::new(&[config.clone()]);
+        let target = manager.probe_targets().await.pop().unwrap();
+        let held = manager.native_lease(&target.registration).await.unwrap();
+        let other = Arc::clone(&manager);
+        let io = Arc::new(TranscriptExecutor::new(vec![]));
+        let observed = Arc::clone(&io);
+        let task = tokio::spawn(async move {
+            let probing = Arc::clone(&other);
+            other
+                .run_probe_with(target, |cfg, token| async move {
+                    assert_eq!(cfg.hostname, "lab.invalid");
+                    let lease = probing.native_lease(&token).await?;
+                    assert_eq!(lease.registration(), &token);
+                    probe_native(observed.as_ref()).await
+                })
+                .await
+        });
+        tokio::task::yield_now().await;
+        let mut replacement = config;
+        replacement.hostname = "other.invalid".into();
+        manager.register_router(replacement).await;
+        drop(held);
+        assert!(task.await.unwrap().is_none());
+        assert!(io.seen_labels().is_empty());
+        assert_eq!(
+            manager.sessions.read().await[&id].state,
+            SessionState::Warming
+        );
+    }
+}
+
 pub(super) struct RegisteredSession {
     config: RouterConfig,
     state: SessionState,
-    // Staged native registration/lease consumers arrive in Tasks3–4.
-    #[cfg_attr(not(test), allow(dead_code))]
     native_revision: Uuid,
 }
 
@@ -44,8 +210,6 @@ impl RegisteredSession {
         }
     }
 
-    // Staged native registration/lease consumers arrive in Tasks3–4.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn native_registration(&self) -> NativeRegistration {
         NativeRegistration {
             router_id: self.config.id,
@@ -67,8 +231,6 @@ impl RegisteredSession {
 /// Mux-error retry is handled internally so callers never need to.
 pub struct SshSessionManager {
     sessions: Arc<RwLock<HashMap<Uuid, RegisteredSession>>>,
-    // Staged native endpoint lease consumers arrive in Tasks3–4.
-    #[cfg_attr(not(test), allow(dead_code))]
     native_endpoints: Mutex<HashMap<NativeEndpoint, Arc<Mutex<()>>>>,
 }
 
@@ -84,7 +246,6 @@ impl SshSessionManager {
         })
     }
 
-    #[allow(dead_code)]
     pub async fn register_router(&self, router: RouterConfig) {
         tracing::info!(router = %router.name, id = %router.id, "registering router in SSH manager");
         self.sessions
@@ -93,7 +254,6 @@ impl SshSessionManager {
             .insert(router.id, RegisteredSession::new(router));
     }
 
-    #[allow(dead_code)]
     pub async fn unregister_router(&self, id: Uuid) {
         tracing::info!(id = %id, "unregistering router from SSH manager");
         self.sessions.write().await.remove(&id);
@@ -107,8 +267,29 @@ impl SshSessionManager {
             .map(|session| session.config.clone())
     }
 
-    // Staged native consumers arrive in Tasks3–4; tokens never contain credentials.
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Capture dispatch decisions and their token under the SAME registry read.
+    /// The config contains credentials: do not log or Debug-render this tuple.
+    pub(crate) async fn registered_snapshot(
+        &self,
+        router_id: Uuid,
+    ) -> Result<(RouterConfig, NativeRegistration)> {
+        self.sessions
+            .read()
+            .await
+            .get(&router_id)
+            .map(|session| (session.config.clone(), session.native_registration()))
+            .ok_or_else(|| anyhow::anyhow!("stale-native-registration"))
+    }
+
+    // Retained token-only API for guarded mutation workflows; monitoring must
+    // capture config + token atomically via registered_snapshot instead.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "token-only native API retained for guarded mutation phase; monitoring uses atomic config/token snapshots"
+        )
+    )]
     pub async fn native_registration(&self, router_id: Uuid) -> Result<NativeRegistration> {
         self.sessions
             .read()
@@ -118,8 +299,6 @@ impl SshSessionManager {
             .ok_or_else(|| anyhow::anyhow!("stale-native-registration"))
     }
 
-    // Staged native consumers arrive in Tasks3–4; hold one lease over the sequence.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn native_lease(&self, expected: &NativeRegistration) -> Result<NativeLease> {
         {
             let sessions = self.sessions.read().await;
@@ -159,56 +338,137 @@ impl SshSessionManager {
 
     // ── Connection warming ──────────────────────────────────────────────────
 
+    async fn probe_targets(&self) -> Vec<ProbeTarget> {
+        self.sessions
+            .read()
+            .await
+            .values()
+            .map(|session| ProbeTarget {
+                config: session.config.clone(),
+                registration: session.native_registration(),
+            })
+            .collect()
+    }
+
+    /// Injection boundary is only the external probe. Registry comparison and
+    /// state attribution are the same in tests and all production probe paths.
+    async fn run_probe_with<F, Fut>(
+        &self,
+        target: ProbeTarget,
+        probe: F,
+    ) -> Option<(String, Result<()>)>
+    where
+        F: FnOnce(RouterConfig, NativeRegistration) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+    {
+        let expected = target.registration;
+        if !self
+            .sessions
+            .read()
+            .await
+            .get(&expected.router_id)
+            .is_some_and(|session| session.native_registration() == expected)
+        {
+            return None;
+        }
+        let name = target.config.name.clone();
+        let result = probe(target.config, expected.clone()).await;
+        let state = match &result {
+            Ok(()) => SessionState::Ready,
+            Err(error) => SessionState::Dead(error.to_string()),
+        };
+        let mut sessions = self.sessions.write().await;
+        let session = sessions
+            .get_mut(&expected.router_id)
+            .filter(|session| session.native_registration() == expected)?;
+        session.state = state;
+        Some((name, result))
+    }
+
+    async fn probe_target(
+        &self,
+        cfg: &RouterConfig,
+        expected: &NativeRegistration,
+        health: bool,
+    ) -> Result<()> {
+        self.probe_target_with(
+            cfg.clone(),
+            expected.clone(),
+            health,
+            |lease| async move { probe_native(&lease).await },
+            |cfg, health| async move { Self::legacy_probe(&cfg, health).await },
+        )
+        .await
+    }
+
+    async fn probe_target_with<F, Fut, G, LegacyFut>(
+        &self,
+        cfg: RouterConfig,
+        expected: NativeRegistration,
+        health: bool,
+        native: F,
+        legacy: G,
+    ) -> Result<()>
+    where
+        F: FnOnce(NativeLease) -> Fut,
+        Fut: std::future::Future<Output = Result<()>>,
+        G: FnOnce(RouterConfig, bool) -> LegacyFut,
+        LegacyFut: std::future::Future<Output = Result<()>>,
+    {
+        if cfg.vendor == RouterVendor::MikroTik {
+            return native(self.native_lease(&expected).await?).await;
+        }
+        legacy(cfg, health).await
+    }
+
+    async fn legacy_probe(cfg: &RouterConfig, health: bool) -> Result<()> {
+        if !health {
+            Self::exec_cmd(cfg, "echo ok").await?;
+            return Ok(());
+        }
+        // Legacy mux-check command/options/auth remain unchanged.
+        let control_path_arg = format!("ControlPath={SSH_MUX_CONTROL_PATH}");
+        let target = format!("{}@{}", cfg.username, cfg.hostname);
+        let port_str = cfg.ssh_port.to_string();
+        let healthy = tokio::time::timeout(
+            Duration::from_secs(5),
+            Command::new("ssh")
+                .args([
+                    "-O",
+                    "check",
+                    "-p",
+                    &port_str,
+                    "-o",
+                    &control_path_arg,
+                    &target,
+                ])
+                .stderr(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .output(),
+        )
+        .await
+        .is_ok_and(|r| r.is_ok_and(|o| o.status.success()));
+        anyhow::ensure!(healthy, "health check failed");
+        Ok(())
+    }
+
     /// Pre-warm ControlMaster connections to every registered router in parallel.
     /// Sends an `SshWarmComplete` event when finished.
     pub async fn warm_all(self: &Arc<Self>, event_tx: &mpsc::UnboundedSender<AppEvent>) {
         let start = Instant::now();
-        let configs: Vec<RouterConfig> = self
-            .sessions
-            .read()
-            .await
-            .values()
-            .map(|session| session.config.clone())
-            .collect();
-
-        let total = configs.len();
+        let targets = self.probe_targets().await;
+        let total = targets.len();
         tracing::info!(count = total, "warming SSH connections");
-
-        let handles: Vec<_> = configs
+        let handles: Vec<_> = targets
             .into_iter()
-            .map(|cfg| {
+            .map(|target| {
                 let this = Arc::clone(self);
-                let id = cfg.id;
-                let name = cfg.name.clone();
-                let host = cfg.hostname.clone();
                 tokio::spawn(async move {
-                    let t = Instant::now();
-                    let result = Self::exec_cmd(&cfg, "echo ok").await;
-                    let elapsed_ms = t.elapsed().as_millis();
-
-                    let (new_state, err) = match result {
-                        Ok(_) => {
-                            tracing::info!(
-                                router = %name, host = %host,
-                                elapsed_ms, "SSH warm OK"
-                            );
-                            (SessionState::Ready, None)
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                router = %name, host = %host,
-                                elapsed_ms, error = %e, "SSH warm FAILED"
-                            );
-                            (
-                                SessionState::Dead(e.to_string()),
-                                Some((name.clone(), e.to_string())),
-                            )
-                        }
-                    };
-                    if let Some(session) = this.sessions.write().await.get_mut(&id) {
-                        session.state = new_state;
-                    }
-                    err
+                    let probing = Arc::clone(&this);
+                    this.run_probe_with(target, |cfg, token| async move {
+                        probing.probe_target(&cfg, &token, false).await
+                    })
+                    .await
                 })
             })
             .collect();
@@ -217,8 +477,9 @@ impl SshSessionManager {
         let mut failed: Vec<(String, String)> = Vec::new();
         for h in handles {
             match h.await {
-                Ok(None) => ready += 1,
-                Ok(Some(pair)) => failed.push(pair),
+                Ok(Some((_, Ok(())))) => ready += 1,
+                Ok(Some((name, Err(error)))) => failed.push((name, error.to_string())),
+                Ok(None) => {} // Replaced registrations are not current results.
                 Err(e) => failed.push(("unknown".into(), e.to_string())),
             }
         }
@@ -234,102 +495,54 @@ impl SshSessionManager {
         let _ = event_tx.send(AppEvent::SshWarmComplete(ready, failed));
     }
 
-    /// Run `ssh -O check` against every router; re-warm dead sessions.
+    /// Native JSON probes / legacy mux checks; re-warm original dead targets.
     /// Sends an `SshHealthReport` event when finished.
     pub async fn health_check_all(self: &Arc<Self>, event_tx: &mpsc::UnboundedSender<AppEvent>) {
         let start = Instant::now();
-        let entries: Vec<(Uuid, RouterConfig)> = self
-            .sessions
-            .read()
-            .await
-            .iter()
-            .map(|(&id, session)| (id, session.config.clone()))
-            .collect();
-
+        let entries = self.probe_targets().await;
         tracing::debug!(count = entries.len(), "starting SSH health check");
 
         let handles: Vec<_> = entries
             .into_iter()
-            .map(|(id, cfg)| {
+            .map(|target| {
                 let this = Arc::clone(self);
-                let name = cfg.name.clone();
                 tokio::spawn(async move {
-                    let control_path_arg = format!("ControlPath={SSH_MUX_CONTROL_PATH}");
-                    let target = format!("{}@{}", cfg.username, cfg.hostname);
-                    let port_str = cfg.ssh_port.to_string();
-
-                    let healthy = tokio::time::timeout(
-                        Duration::from_secs(5),
-                        Command::new("ssh")
-                            .args([
-                                "-O",
-                                "check",
-                                "-p",
-                                &port_str,
-                                "-o",
-                                &control_path_arg,
-                                &target,
-                            ])
-                            .stderr(std::process::Stdio::piped())
-                            .stdout(std::process::Stdio::null())
-                            .output(),
-                    )
-                    .await
-                    .is_ok_and(|r| r.is_ok_and(|o| o.status.success()));
-
-                    let mut sessions = this.sessions.write().await;
-                    if let Some(session) = sessions.get_mut(&id) {
-                        if healthy {
-                            session.state = SessionState::Ready;
-                        } else {
-                            tracing::debug!(router = %name, "health check failed — marking dead");
-                            session.state = SessionState::Dead("health check failed".into());
-                        }
-                    }
-                    (id, name, healthy)
+                    let probing = Arc::clone(&this);
+                    let result = this
+                        .run_probe_with(target.clone(), |cfg, token| async move {
+                            probing.probe_target(&cfg, &token, true).await
+                        })
+                        .await;
+                    (target, result)
                 })
             })
             .collect();
 
         let mut healthy_count = 0usize;
-        let mut dead_names: Vec<(Uuid, String, RouterConfig)> = Vec::new();
+        let mut dead_targets = Vec::new();
 
         for h in handles {
-            if let Ok((id, name, is_healthy)) = h.await {
-                if is_healthy {
+            if let Ok((target, Some((_, result)))) = h.await {
+                if result.is_ok() {
                     healthy_count += 1;
                 } else {
-                    let cfg = self.get_config(id).await;
-                    if let Some(cfg) = cfg {
-                        dead_names.push((id, name, cfg));
-                    }
+                    dead_targets.push(target);
                 }
             }
         }
 
         // Re-warm dead sessions
-        let dead_count = dead_names.len();
-        let rewarm_handles: Vec<_> = dead_names
+        let dead_count = dead_targets.len();
+        let rewarm_handles: Vec<_> = dead_targets
             .into_iter()
-            .map(|(id, name, cfg)| {
+            .map(|target| {
                 let this = Arc::clone(self);
                 tokio::spawn(async move {
-                    let t = Instant::now();
-                    let new_state = match Self::exec_cmd(&cfg, "echo ok").await {
-                        Ok(_) => {
-                            tracing::info!(router = %name, elapsed_ms = t.elapsed().as_millis(), "SSH re-warm OK");
-                            SessionState::Ready
-                        }
-                        Err(e) => {
-                            tracing::warn!(router = %name, elapsed_ms = t.elapsed().as_millis(), error = %e, "SSH re-warm FAILED");
-                            SessionState::Dead(e.to_string())
-                        }
-                    };
-                    let rewarmed = matches!(new_state, SessionState::Ready);
-                    if let Some(session) = this.sessions.write().await.get_mut(&id) {
-                        session.state = new_state;
-                    }
-                    (name, rewarmed)
+                    let probing = Arc::clone(&this);
+                    this.run_probe_with(target, |cfg, token| async move {
+                        probing.probe_target(&cfg, &token, false).await
+                    })
+                    .await
                 })
             })
             .collect();
@@ -337,8 +550,8 @@ impl SshSessionManager {
         let mut rewarmed = 0usize;
         let mut still_dead: Vec<String> = Vec::new();
         for h in rewarm_handles {
-            if let Ok((name, ok)) = h.await {
-                if ok {
+            if let Ok(Some((name, result))) = h.await {
+                if result.is_ok() {
                     rewarmed += 1;
                 } else {
                     still_dead.push(name);
@@ -365,6 +578,113 @@ impl SshSessionManager {
 
     // ── Simple command execution (ssh user@host "cmd") ──────────────────────
 
+    fn require_legacy_config(config: &RouterConfig) -> Result<()> {
+        anyhow::ensure!(
+            config.vendor != RouterVendor::MikroTik,
+            "MikroTik requires a native lease; generic SSH rejected"
+        );
+        Ok(())
+    }
+
+    async fn legacy_config(
+        &self,
+        router_id: Uuid,
+        expected: Option<&RouterConfig>,
+    ) -> Result<RouterConfig> {
+        let sessions = self.sessions.read().await;
+        let session = sessions
+            .get(&router_id)
+            .ok_or_else(|| anyhow::anyhow!("Router {router_id} not registered"))?;
+        // Check the ACTUAL captured registry record, not an earlier dispatcher
+        // decision. No payload logging or external I/O may precede this guard.
+        Self::require_legacy_config(&session.config)?;
+        anyhow::ensure!(
+            expected.is_none_or(|config| config == &session.config),
+            "stale legacy registration; router configuration changed"
+        );
+        Ok(session.config.clone())
+    }
+
+    async fn run_legacy(
+        &self,
+        router_id: Uuid,
+        expected: Option<&RouterConfig>,
+        operation: LegacyOperation<'_>,
+    ) -> Result<String> {
+        self.run_legacy_with(
+            router_id,
+            expected,
+            operation,
+            Self::execute_legacy,
+            Self::cleanup_legacy,
+        )
+        .await
+    }
+
+    async fn execute_legacy(
+        config: RouterConfig,
+        operation: LegacyOperation<'_>,
+    ) -> Result<String> {
+        match operation {
+            LegacyOperation::Command(command) => Self::exec_cmd(&config, command).await,
+            LegacyOperation::Piped { data, timeout } => {
+                Self::exec_piped(&config, data, timeout).await
+            }
+            LegacyOperation::ShellPipe(script) => Self::exec_shell_pipe(&config, script).await,
+        }
+    }
+
+    async fn cleanup_legacy(config: RouterConfig) {
+        crate::router::cleanup_mux_socket(&config.username, &config.hostname, config.ssh_port)
+            .await;
+    }
+
+    async fn run_legacy_with<'a, F, Fut, C, Cleanup>(
+        &self,
+        router_id: Uuid,
+        expected: Option<&RouterConfig>,
+        operation: LegacyOperation<'a>,
+        mut execute: F,
+        cleanup: C,
+    ) -> Result<String>
+    where
+        F: FnMut(RouterConfig, LegacyOperation<'a>) -> Fut,
+        Fut: std::future::Future<Output = Result<String>>,
+        C: FnOnce(RouterConfig) -> Cleanup,
+        Cleanup: std::future::Future<Output = ()>,
+    {
+        let config = self.legacy_config(router_id, expected).await?;
+        match operation {
+            LegacyOperation::Command(command) => {
+                tracing::debug!(router = %config.name, cmd = %command, "run_cmd")
+            }
+            LegacyOperation::Piped { .. } => tracing::debug!(router = %config.name, "run_piped"),
+            LegacyOperation::ShellPipe(_) => {
+                tracing::debug!(router = %config.name, "run_shell_pipe")
+            }
+        }
+        match execute(config.clone(), operation).await {
+            Err(error) if crate::router::is_ssh_mux_error(&error) => {
+                match operation {
+                    LegacyOperation::Command(_) => {
+                        tracing::warn!(router = %config.name, "stale mux socket — cleaning up and retrying")
+                    }
+                    LegacyOperation::Piped { .. } => {
+                        tracing::warn!(router = %config.name, "stale mux socket (piped) — cleaning up and retrying")
+                    }
+                    LegacyOperation::ShellPipe(_) => {
+                        tracing::warn!(router = %config.name, "stale mux socket (shell pipe) — cleaning up and retrying")
+                    }
+                }
+                // A re-registration during the first attempt cannot retarget
+                // cleanup/retry: neither operation resolves the UUID again.
+                cleanup(config.clone()).await;
+                execute(config, operation).await
+            }
+            other => other,
+        }
+    }
+
     fn exec_cmd_builder(cfg: &RouterConfig) -> (Command, String, String, String) {
         let target = format!("{}@{}", cfg.username, cfg.hostname);
         let port_str = cfg.ssh_port.to_string();
@@ -383,6 +703,7 @@ impl SshSessionManager {
     }
 
     async fn exec_cmd(cfg: &RouterConfig, remote_cmd: &str) -> Result<String> {
+        Self::require_legacy_config(cfg)?;
         let (mut cmd, target, port_str, control_path_arg) = Self::exec_cmd_builder(cfg);
 
         let mut args: Vec<&str> = vec![
@@ -440,22 +761,30 @@ impl SshSessionManager {
     }
 
     /// Run a simple SSH command on a router (no stdin piping).
+    // Retained UUID-only compatibility API. Backends bind their immutable cfg.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained guarded UUID-only compatibility entrypoint; legacy backends use config-bound calls"
+        )
+    )]
     pub async fn run_cmd(&self, router_id: Uuid, remote_cmd: &str) -> Result<String> {
-        let cfg = self
-            .get_config(router_id)
+        self.run_legacy(router_id, None, LegacyOperation::Command(remote_cmd))
             .await
-            .ok_or_else(|| anyhow::anyhow!("Router {router_id} not registered"))?;
+    }
 
-        tracing::debug!(router = %cfg.name, cmd = %remote_cmd, "run_cmd");
-
-        match Self::exec_cmd(&cfg, remote_cmd).await {
-            Err(e) if crate::router::is_ssh_mux_error(&e) => {
-                tracing::warn!(router = %cfg.name, "stale mux socket — cleaning up and retrying");
-                crate::router::cleanup_mux_socket(&cfg.username, &cfg.hostname, cfg.ssh_port).await;
-                Self::exec_cmd(&cfg, remote_cmd).await
-            }
-            other => other,
-        }
+    pub(crate) async fn run_cmd_for(
+        &self,
+        expected: &RouterConfig,
+        remote_cmd: &str,
+    ) -> Result<String> {
+        self.run_legacy(
+            expected.id,
+            Some(expected),
+            LegacyOperation::Command(remote_cmd),
+        )
+        .await
     }
 
     // ── Piped stdin execution (ssh -T user@host < stdin) ────────────────────
@@ -465,6 +794,7 @@ impl SshSessionManager {
         stdin_data: &str,
         command_timeout: Duration,
     ) -> Result<String> {
+        Self::require_legacy_config(cfg)?;
         let (mut cmd, target, port_str, control_path_arg) = Self::exec_cmd_builder(cfg);
 
         let mut args: Vec<&str> = vec![
@@ -535,33 +865,74 @@ impl SshSessionManager {
     }
 
     /// Run SSH with piped stdin (for pfSense menu bypass, FortiGate CLI pipeline).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained guarded UUID-only compatibility entrypoint; legacy backends use config-bound calls"
+        )
+    )]
     pub async fn run_piped(&self, router_id: Uuid, stdin_data: &str) -> Result<String> {
-        self.run_piped_with_timeout(router_id, stdin_data, Duration::from_secs(15))
+        self.run_legacy(
+            router_id,
+            None,
+            LegacyOperation::Piped {
+                data: stdin_data,
+                timeout: Duration::from_secs(15),
+            },
+        )
+        .await
+    }
+
+    pub(crate) async fn run_piped_for(
+        &self,
+        expected: &RouterConfig,
+        stdin_data: &str,
+    ) -> Result<String> {
+        self.run_piped_with_timeout_for(expected, stdin_data, Duration::from_secs(15))
             .await
     }
 
     /// Run SSH with piped stdin, allowing a longer timeout for NVUE applies.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained guarded UUID-only compatibility entrypoint; legacy backends use config-bound calls"
+        )
+    )]
     pub async fn run_piped_with_timeout(
         &self,
         router_id: Uuid,
         stdin_data: &str,
         command_timeout: Duration,
     ) -> Result<String> {
-        let cfg = self
-            .get_config(router_id)
-            .await
-            .ok_or_else(|| anyhow::anyhow!("Router {router_id} not registered"))?;
+        self.run_legacy(
+            router_id,
+            None,
+            LegacyOperation::Piped {
+                data: stdin_data,
+                timeout: command_timeout,
+            },
+        )
+        .await
+    }
 
-        tracing::debug!(router = %cfg.name, "run_piped");
-
-        match Self::exec_piped(&cfg, stdin_data, command_timeout).await {
-            Err(e) if crate::router::is_ssh_mux_error(&e) => {
-                tracing::warn!(router = %cfg.name, "stale mux socket (piped) — cleaning up and retrying");
-                crate::router::cleanup_mux_socket(&cfg.username, &cfg.hostname, cfg.ssh_port).await;
-                Self::exec_piped(&cfg, stdin_data, command_timeout).await
-            }
-            other => other,
-        }
+    pub(crate) async fn run_piped_with_timeout_for(
+        &self,
+        expected: &RouterConfig,
+        stdin_data: &str,
+        command_timeout: Duration,
+    ) -> Result<String> {
+        self.run_legacy(
+            expected.id,
+            Some(expected),
+            LegacyOperation::Piped {
+                data: stdin_data,
+                timeout: command_timeout,
+            },
+        )
+        .await
     }
 
     // ── Shell pipeline execution (for Citrix: { printf ...; } | ssh ...) ────
@@ -586,6 +957,7 @@ impl SshSessionManager {
     }
 
     async fn exec_shell_pipe(cfg: &RouterConfig, script: &str) -> Result<String> {
+        Self::require_legacy_config(cfg)?;
         let mut cmd = Command::new("sh");
         cmd.arg("-c").arg(script);
         if let Some(ref pw) = cfg.password {
@@ -620,22 +992,29 @@ impl SshSessionManager {
     }
 
     /// Run a shell pipeline that pipes into SSH (used by Citrix interactive vtysh).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "retained guarded UUID-only compatibility entrypoint; legacy backends use config-bound calls"
+        )
+    )]
     pub async fn run_shell_pipe(&self, router_id: Uuid, script: &str) -> Result<String> {
-        let cfg = self
-            .get_config(router_id)
+        self.run_legacy(router_id, None, LegacyOperation::ShellPipe(script))
             .await
-            .ok_or_else(|| anyhow::anyhow!("Router {router_id} not registered"))?;
+    }
 
-        tracing::debug!(router = %cfg.name, "run_shell_pipe");
-
-        match Self::exec_shell_pipe(&cfg, script).await {
-            Err(e) if crate::router::is_ssh_mux_error(&e) => {
-                tracing::warn!(router = %cfg.name, "stale mux socket (shell pipe) — cleaning up and retrying");
-                crate::router::cleanup_mux_socket(&cfg.username, &cfg.hostname, cfg.ssh_port).await;
-                Self::exec_shell_pipe(&cfg, script).await
-            }
-            other => other,
-        }
+    pub(crate) async fn run_shell_pipe_for(
+        &self,
+        expected: &RouterConfig,
+        script: &str,
+    ) -> Result<String> {
+        self.run_legacy(
+            expected.id,
+            Some(expected),
+            LegacyOperation::ShellPipe(script),
+        )
+        .await
     }
 
     // ── Cleanup ─────────────────────────────────────────────────────────────
@@ -651,5 +1030,221 @@ impl SshSessionManager {
             .map(|session| session.config.clone())
             .collect();
         crate::router::cleanup_ssh_sessions(&routers).await;
+    }
+}
+
+#[cfg(test)]
+mod legacy_security_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    fn config(vendor: RouterVendor) -> RouterConfig {
+        RouterConfig {
+            id: Uuid::nil(),
+            hostname: "origin.invalid".into(),
+            username: "tester".into(),
+            vendor,
+            password: Some("synthetic-origin-password".into()),
+            ..RouterConfig::default()
+        }
+    }
+
+    #[tokio::test]
+    async fn mikrotik_sec_001_compatibility_entries_reject_unregistered_router() {
+        let manager = SshSessionManager::new(&[]);
+        for result in [
+            manager
+                .run_cmd(Uuid::nil(), "synthetic-sensitive-command")
+                .await,
+            manager
+                .run_piped(Uuid::nil(), "synthetic-sensitive-stdin")
+                .await,
+            manager
+                .run_piped_with_timeout(
+                    Uuid::nil(),
+                    "synthetic-sensitive-stdin",
+                    Duration::from_secs(120),
+                )
+                .await,
+            manager
+                .run_shell_pipe(Uuid::nil(), "synthetic-sensitive-shell")
+                .await,
+        ] {
+            assert!(result.unwrap_err().to_string().contains("not registered"));
+        }
+    }
+
+    #[tokio::test]
+    async fn mikrotik_sec_001_generic_native_entries_reject_before_external_io() {
+        let cfg = config(RouterVendor::MikroTik);
+        let manager = SshSessionManager::new(&[cfg.clone()]);
+        let calls = AtomicUsize::new(0);
+        let mut rejected = Vec::new();
+        for operation in [
+            LegacyOperation::Command("synthetic-sensitive-command"),
+            LegacyOperation::Piped {
+                data: "synthetic-sensitive-stdin",
+                timeout: Duration::from_secs(15),
+            },
+            LegacyOperation::Piped {
+                data: "synthetic-sensitive-stdin",
+                timeout: Duration::from_secs(120),
+            },
+            LegacyOperation::ShellPipe("synthetic-sensitive-shell"),
+        ] {
+            let result = manager
+                .run_legacy_with(
+                    cfg.id,
+                    None,
+                    operation,
+                    |_, _| {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        async { Ok(String::new()) }
+                    },
+                    |_| async { panic!("rejected native call must not clean up a mux") },
+                )
+                .await;
+            rejected.push(result.is_err());
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "generic native calls must stop before external I/O"
+        );
+        assert!(rejected.into_iter().all(|value| value));
+    }
+
+    #[derive(Clone)]
+    struct LogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn mikrotik_sec_001_native_rejection_never_logs_sensitive_payload() {
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = LogWriter(Arc::clone(&bytes));
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let cfg = config(RouterVendor::MikroTik);
+        let manager = SshSessionManager::new(&[cfg.clone()]);
+        let _result = manager
+            .run_legacy_with(
+                cfg.id,
+                None,
+                LegacyOperation::Command("synthetic-credential-payload-sec001"),
+                |_, _| async { Ok(String::new()) },
+                |_| async {},
+            )
+            .await;
+        let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(
+            !output.contains("synthetic-credential-payload-sec001"),
+            "rejected native payload was logged"
+        );
+        assert!(!output.contains("synthetic-origin-password"));
+    }
+
+    #[tokio::test]
+    async fn mikrotik_sec_001_bound_two_call_workflow_never_retargets_after_registration() {
+        for change in ["native-endpoint", "legacy-endpoint", "legacy-auth"] {
+            let original = config(RouterVendor::Cumulus);
+            let manager = SshSessionManager::new(&[original.clone()]);
+            let mut replacement = original.clone();
+            if change == "native-endpoint" {
+                replacement.vendor = RouterVendor::MikroTik;
+            }
+            if change == "legacy-auth" {
+                replacement.username = "replacement-user".into();
+            } else {
+                replacement.hostname = "replacement.invalid".into();
+            }
+            let manager_ref = &manager;
+            let read = manager
+                .run_legacy_with(
+                    original.id,
+                    Some(&original),
+                    LegacyOperation::Command("cat /etc/os-release"),
+                    |captured, _| {
+                        let replacement = replacement.clone();
+                        async move {
+                            assert_eq!(captured.hostname, "origin.invalid");
+                            manager_ref.register_router(replacement).await;
+                            Ok("VERSION_ID=\"5.14.0\"".into())
+                        }
+                    },
+                    |_| async {},
+                )
+                .await
+                .unwrap();
+            assert!(read.contains("5.14.0"));
+            let writes = AtomicUsize::new(0);
+            let result = manager.run_legacy_with(original.id, Some(&original),
+                LegacyOperation::Piped { data: "nv set router bgp neighbor peer password synthetic-secret\nnv config apply --y\n", timeout: Duration::from_secs(120) },
+                |_, _| { writes.fetch_add(1, Ordering::SeqCst); async { Ok("applied".into()) } },
+                |_| async {},
+            ).await;
+            assert_eq!(
+                writes.load(Ordering::SeqCst),
+                0,
+                "a later batch must not use a replacement config: {change}"
+            );
+            assert!(result.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn mikrotik_sec_001_retry_keeps_one_original_config_and_endpoint() {
+        let original = config(RouterVendor::Cisco);
+        let manager = SshSessionManager::new(&[original.clone()]);
+        let calls = AtomicUsize::new(0);
+        let cleanups = AtomicUsize::new(0);
+        let manager_ref = &manager;
+        let original_ref = &original;
+        let result = manager
+            .run_legacy_with(
+                original.id,
+                Some(&original),
+                LegacyOperation::Command("show ip bgp summary"),
+                |captured, _| {
+                    let attempt = calls.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        assert!(
+                            captured == *original_ref,
+                            "retry must retain full original config without re-resolving UUID"
+                        );
+                        if attempt == 0 {
+                            let mut replacement = original_ref.clone();
+                            replacement.hostname = "replacement.invalid".into();
+                            replacement.vendor = RouterVendor::MikroTik;
+                            manager_ref.register_router(replacement).await;
+                            anyhow::bail!("control master unavailable");
+                        }
+                        Ok("origin-result".into())
+                    }
+                },
+                |captured| {
+                    cleanups.fetch_add(1, Ordering::SeqCst);
+                    assert!(captured == original);
+                    async {}
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, "origin-result");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(cleanups.load(Ordering::SeqCst), 1);
     }
 }

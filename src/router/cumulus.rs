@@ -35,11 +35,11 @@ impl CumulusBackend {
     async fn vtysh_run(&self, frr_cmd: &str) -> Result<String> {
         let quoted = shell_quote(frr_cmd);
         let direct = format!("vtysh -c {quoted}");
-        match self.ssh.run_cmd(self.config.id, &direct).await {
+        match self.ssh.run_cmd_for(&self.config, &direct).await {
             Ok(out) if !frr_error(&out) => Ok(out),
             _ => {
                 let sudo = format!("sudo -n vtysh -c {quoted}");
-                let out = self.ssh.run_cmd(self.config.id, &sudo).await?;
+                let out = self.ssh.run_cmd_for(&self.config, &sudo).await?;
                 if frr_error(&out) {
                     bail!("FRR rejected command: {frr_cmd}");
                 }
@@ -50,7 +50,7 @@ impl CumulusBackend {
 
     pub async fn connect(&mut self) -> Result<()> {
         self.status = ConnectionStatus::Connecting;
-        match self.ssh.run_cmd(self.config.id, "echo ok").await {
+        match self.ssh.run_cmd_for(&self.config, "echo ok").await {
             Ok(_) => {
                 self.status = ConnectionStatus::Connected;
                 Ok(())
@@ -103,15 +103,15 @@ impl CumulusBackend {
                     peer.description = detail.description.clone();
                     peer.route_map_in = detail.route_map_in.clone();
                     peer.route_map_out = detail.route_map_out.clone();
-                    peer.next_hop_self = detail.next_hop_self;
-                    peer.route_reflector_client = detail.route_reflector_client;
+                    peer.next_hop_self = Some(detail.next_hop_self);
+                    peer.route_reflector_client = Some(detail.route_reflector_client);
                     peer.update_source = detail.update_source;
-                    peer.password_configured = detail.password_configured;
+                    peer.password_configured = Some(detail.password_configured);
                     if detail.hold_time > 0 {
-                        peer.hold_time = detail.hold_time;
+                        peer.hold_time = Some(detail.hold_time);
                     }
                     if detail.keepalive > 0 {
-                        peer.keepalive = detail.keepalive;
+                        peer.keepalive = Some(detail.keepalive);
                     }
                 }
             }
@@ -167,7 +167,7 @@ impl CumulusBackend {
     pub async fn ping_mtu(&self, target: IpAddr) -> Result<u16> {
         for payload in [1472u16, 1402, 548] {
             let command = format!("ping -c 3 -M do -s {payload} {target}");
-            if let Ok(out) = self.ssh.run_cmd(self.config.id, &command).await {
+            if let Ok(out) = self.ssh.run_cmd_for(&self.config, &command).await {
                 if out.contains(" 0% packet loss") || out.contains("bytes from") {
                     return Ok(payload + 28);
                 }
@@ -193,7 +193,7 @@ impl CumulusBackend {
 
         let pending = self
             .ssh
-            .run_cmd(self.config.id, "nv config diff applied pending -o commands")
+            .run_cmd_for(&self.config, "nv config diff applied pending -o commands")
             .await
             .context("checking Cumulus pending NVUE changes")?;
         let pending = pending.trim();
@@ -227,7 +227,7 @@ impl CumulusBackend {
         script.push_str(&format!("printf '%s\\n' '{marker}'\n"));
         let output = self
             .ssh
-            .run_piped_with_timeout(self.config.id, &script, std::time::Duration::from_secs(120))
+            .run_piped_with_timeout_for(&self.config, &script, std::time::Duration::from_secs(120))
             .await
             .context("Cumulus NVUE command batch failed")?;
         if !output.lines().any(|line| line.trim() == marker) {
@@ -239,7 +239,7 @@ impl CumulusBackend {
     async fn is_legacy_5x(&self) -> Result<bool> {
         let out = self
             .ssh
-            .run_cmd(self.config.id, "cat /etc/os-release")
+            .run_cmd_for(&self.config, "cat /etc/os-release")
             .await
             .context("reading Cumulus version")?;
         let version = out.lines().find_map(|line| {

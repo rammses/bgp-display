@@ -42,13 +42,13 @@ impl VyOsBackend {
     // ── SSH helpers (delegated to session manager) ────────────────────────────
 
     async fn raw_ssh_run(&self, shell_cmd: &str) -> Result<String> {
-        self.ssh.run_cmd(self.config.id, shell_cmd).await
+        self.ssh.run_cmd_for(&self.config, shell_cmd).await
     }
 
     async fn vtysh_run(&self, frr_cmd: &str) -> Result<String> {
         let escaped = frr_cmd.replace('\'', "'\\''");
         let shell_cmd = format!("vtysh -c '{escaped}'");
-        self.ssh.run_cmd(self.config.id, &shell_cmd).await
+        self.ssh.run_cmd_for(&self.config, &shell_cmd).await
     }
 
     // ── connect ───────────────────────────────────────────────────────────────
@@ -154,15 +154,15 @@ impl VyOsBackend {
                 peer.description = d.description;
                 peer.route_map_in = d.route_map_in;
                 peer.route_map_out = d.route_map_out;
-                peer.next_hop_self = d.next_hop_self;
-                peer.route_reflector_client = d.route_reflector_client;
+                peer.next_hop_self = Some(d.next_hop_self);
+                peer.route_reflector_client = Some(d.route_reflector_client);
                 peer.update_source = d.update_source;
-                peer.password_configured = d.password_configured;
+                peer.password_configured = Some(d.password_configured);
                 if d.hold_time > 0 {
-                    peer.hold_time = d.hold_time;
+                    peer.hold_time = Some(d.hold_time);
                 }
                 if d.keepalive > 0 {
-                    peer.keepalive = d.keepalive;
+                    peer.keepalive = Some(d.keepalive);
                 }
             }
         }
@@ -260,7 +260,7 @@ impl VyOsBackend {
         let vtysh_stdin = format!("vtysh\n{stdin}");
         let out = self
             .ssh
-            .run_piped(self.config.id, &vtysh_stdin)
+            .run_piped_for(&self.config, &vtysh_stdin)
             .await
             .context("write_config: SSH pipe to vtysh failed")?;
 
