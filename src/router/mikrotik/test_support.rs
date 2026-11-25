@@ -89,6 +89,8 @@ pub fn record(value: Value) -> NativeRecord {
 pub fn documented_inventory() -> NativeInventory {
     // Synthetic documentation-derived, not device captures. Normalized bool
     // flags are intentional fixtures, not claims about unobserved wire keys.
+    // Explicit dynamic=false is static-kind proof for these synthetic objects;
+    // missing or unrecognized target kind flags must never imply false/static.
     NativeInventory {
         version: "7.24.7".into(),
         instances: vec![record(json!({".id":"*1", "name":"blue", "as":65000,
@@ -97,11 +99,11 @@ pub fn documented_inventory() -> NativeInventory {
             record(json!({".id":"*2", "name":"peer-a", "instance":"blue",
                 "local.address":"192.0.2.1", "remote.address":"192.0.2.2",
                 "remote.as":65001, "local.role":"ebgp", "afi":"ip",
-                "input.filter":"blue-in", "output.filter-chain":"blue-out", "disabled":false})),
+                "input.filter":"blue-in", "output.filter-chain":"blue-out", "disabled":false, "dynamic":false})),
             record(json!({".id":"*3", "name":"peer-b", "instance":"blue",
                 "local.address":"192.0.2.1", "remote.address":"192.0.2.3",
                 "remote.as":65001, "local.role":"ebgp", "afi":"ip",
-                "input.filter":"blue-in", "output.filter-chain":"blue-out", "disabled":true})),
+                "input.filter":"blue-in", "output.filter-chain":"blue-out", "disabled":true, "dynamic":false})),
         ],
         templates: vec![],
         sessions: vec![record(

@@ -178,6 +178,7 @@ const ROUTE_FIELDS: &[&str] = &[
     "bgp.esi",
     "bgp.otc",
     "route-distinguisher",
+    "disabled",
     "filtered",
     "unreachable",
     "active",
@@ -185,6 +186,7 @@ const ROUTE_FIELDS: &[&str] = &[
     "bgp-net",
     "ecmp",
     "blackhole",
+    "copy",
     "hw-offloaded",
     "connect",
     "static",
@@ -194,6 +196,8 @@ const ROUTE_FIELDS: &[&str] = &[
     "dhcp",
     "vpn",
     "modem",
+    "ldp-address",
+    "ldp-mapping",
     "slaac",
     "bgp-mpls-vpn",
     "evpn",
@@ -635,7 +639,7 @@ fn peer_reason(
     if let ScopeEligibility::ReadOnly(reason) = scope {
         return Some(reason.clone());
     }
-    if record.props.contains_key("dynamic") && flag(record, "dynamic") != Some(false) {
+    if flag(record, "dynamic") != Some(false) {
         return Some("dynamic or unknown native connection kind is read-only".into());
     }
     if flag(record, "disabled").is_none() {
@@ -846,16 +850,35 @@ fn scoped_routes(
             continue;
         }
         let known_other_protocol = [
-            "connect", "static", "rip", "ospf", "isis", "dhcp", "vpn", "modem", "slaac",
+            "connect",
+            "static",
+            "rip",
+            "ospf",
+            "isis",
+            "dhcp",
+            "vpn",
+            "modem",
+            "slaac",
+            "ldp-address",
+            "ldp-mapping",
         ]
         .iter()
         .any(|key| flag(&route, key) == Some(true));
-        if !route.props.contains_key("bgp.session")
-            && (flag(&route, "bgp") == Some(false)
-                || (known_other_protocol
-                    && flag(&route, "bgp") != Some(true)
-                    && !route.props.keys().any(|key| key.starts_with("bgp."))))
-        {
+        // Positive other-protocol evidence may exclude a row, but neither an
+        // explicit bgp=false nor an LDP flag may conceal BGP attributes or
+        // mixed/unknown BGP-related flags. Copy alone proves no protocol.
+        let bgp_evidence = route.props.keys().any(|key| key.starts_with("bgp."))
+            || ["bgp", "bgp-net", "bgp-mpls-vpn", "evpn"]
+                .iter()
+                .any(|key| route.props.contains_key(*key) && flag(&route, key) != Some(false));
+        ensure!(
+            !bgp_evidence
+                || !["ldp-address", "ldp-mapping"]
+                    .iter()
+                    .any(|key| flag(&route, key) == Some(true)),
+            "native route protocol evidence is mixed or unresolved"
+        );
+        if !bgp_evidence && (flag(&route, "bgp") == Some(false) || known_other_protocol) {
             continue;
         }
         let name =
@@ -1106,6 +1129,46 @@ mod tests {
                     && row.scope == ScopeEligibility::Main
                     && row.session.is_none()
                     && row.read_only_reason.is_none()));
+            }
+        }
+    }
+
+    #[test]
+    fn mikrotik_identity_kind_requires_positive_static_evidence() {
+        for sessions_present in [false, true] {
+            for observed in [
+                None,
+                Some(json!(null)),
+                Some(json!("unknown")),
+                Some(json!(0)),
+                Some(json!(true)),
+                Some(json!(false)),
+            ] {
+                let mut inv = documented_inventory();
+                if !sessions_present {
+                    inv.sessions.clear();
+                }
+                match &observed {
+                    Some(value) => {
+                        inv.connections[0]
+                            .props
+                            .insert("dynamic".into(), value.clone());
+                    }
+                    None => {
+                        inv.connections[0].props.remove("dynamic");
+                    }
+                }
+                let rows = join_native_peers(&inv, "blue", Uuid::from_u128(88)).unwrap();
+                assert_eq!(rows[0].scope, ScopeEligibility::Main);
+                assert_eq!(rows[0].record, inv.connections[0]);
+                assert_eq!(rows[0].connection.as_ref().unwrap().observed_id, "*2");
+                assert_eq!(rows[0].session.is_some(), sessions_present);
+                let static_proven = observed == Some(json!(false));
+                assert_eq!(
+                    rows[0].read_only_reason.is_none(),
+                    static_proven,
+                    "dynamic={observed:?}, sessions_present={sessions_present}"
+                );
             }
         }
     }
@@ -1563,6 +1626,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mikrotik_read_kind_unknown_keeps_proven_main_routes_visible() {
+        for observed in [
+            None,
+            Some(json!(null)),
+            Some(json!("unknown")),
+            Some(json!(true)),
+        ] {
+            let mut inv = documented_inventory();
+            match observed {
+                Some(value) => {
+                    inv.connections[0].props.insert("dynamic".into(), value);
+                }
+                None => {
+                    inv.connections[0].props.remove("dynamic");
+                }
+            }
+            let raw = route("peer-a-1", "main");
+            let io =
+                TranscriptExecutor::new(replies(&inv, Some(Reply::Data(json!([raw.clone()])))));
+            let snap = snapshot(&io, WITH_ROUTES).await;
+            assert_eq!(snap.peers[0].scope, ScopeEligibility::Main);
+            assert_eq!(snap.peers[0].session_id.as_deref(), Some("*4"));
+            assert!(snap.peers[0].read_only_reason.is_some());
+            assert_eq!(snap.peers[0].record, inv.connections[0]);
+            assert_eq!(snap.routes, NativeRead::Available(vec![record(raw)]));
+            assert_eq!(io.mutation_attempts(), 0);
+        }
+    }
+
+    #[tokio::test]
     async fn mikrotik_read_edit_readonly_routes_remain_available_alongside_editable_peer() {
         let mut inv = documented_inventory();
         inv.connections[0].props.remove("disabled");
@@ -1626,6 +1719,101 @@ mod tests {
         };
         assert_eq!(routes.len(), 1);
         assert_eq!(routes[0].id, "*B1");
+    }
+
+    #[test]
+    fn mikrotik_read_route_projection_preserves_documented_flags() {
+        // S6 7.24 Flags table plus its detailed example's copy flag. This is
+        // compiler evidence, not observed target serialization or wire keys.
+        let script = read_script(Uuid::nil(), NativeMenu::Routes);
+        for field in [
+            "disabled",
+            "filtered",
+            "unreachable",
+            "active",
+            "connect",
+            "static",
+            "rip",
+            "bgp",
+            "bgp-net",
+            "ospf",
+            "isis",
+            "dhcp",
+            "vpn",
+            "modem",
+            "ldp-address",
+            "ldp-mapping",
+            "slaac",
+            "bgp-mpls-vpn",
+            "evpn",
+            "hw-offloaded",
+            "ecmp",
+            "blackhole",
+            "copy",
+        ] {
+            assert!(
+                script.contains(&format!("\"{field}\"")),
+                "projection drops {field}"
+            );
+        }
+        let command = native_read_command(Uuid::nil(), NativeMenu::Routes).unwrap();
+        assert_eq!(command.kind, crate::ssh::NativeCommandKind::Read);
+    }
+
+    #[tokio::test]
+    async fn mikrotik_read_positive_ldp_does_not_poison_proven_bgp_rib() {
+        let inv = documented_inventory();
+        for field in ["ldp-address", "ldp-mapping"] {
+            // Synthetic documentation-derived flag values, NOT device output.
+            let mut bgp = route("peer-a-1", "main");
+            bgp["disabled"] = json!(true);
+            bgp["copy"] = json!(true);
+            let ldp = json!({".id":"*F0", "routing-table":"main", "afi":"ip", (field):true,
+                "dst-address":"192.0.2.0/24"});
+            let io = TranscriptExecutor::new(replies(
+                &inv,
+                Some(Reply::Data(json!([bgp.clone(), ldp]))),
+            ));
+            let snap = snapshot(&io, WITH_ROUTES).await;
+            assert_eq!(snap.routes, NativeRead::Available(vec![record(bgp)]));
+            assert_eq!(io.mutation_attempts(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn mikrotik_read_ldp_unknown_copy_or_bgp_conflict_stays_unavailable() {
+        let inv = documented_inventory();
+        for evidence in [
+            json!({"ldp-address":false}),
+            json!({"ldp-mapping":"unknown"}),
+            json!({"copy":true}),
+            json!({"ldp-address":true,"bgp":true}),
+            json!({"ldp-address":true,"bgp":null}),
+            json!({"ldp-mapping":true,"bgp.session":"unresolved"}),
+            json!({"ldp-address":true,"bgp.session":"peer-a-1"}),
+            json!({"ldp-address":true,"bgp.as-path":"65099"}),
+            json!({"ldp-address":true,"bgp":false,"bgp.as-path":"65099"}),
+            json!({"ldp-mapping":true,"bgp-net":true}),
+            json!({"ldp-mapping":true,"bgp-net":"unknown"}),
+            json!({"ldp-address":true,"bgp-mpls-vpn":true}),
+            json!({"ldp-address":true,"evpn":true}),
+        ] {
+            let mut unresolved = evidence.clone();
+            unresolved[".id"] = json!("*F0");
+            unresolved["routing-table"] = json!("main");
+            unresolved["dst-address"] = json!("198.51.100.0/24");
+            unresolved["afi"] = json!("ip");
+            let io = TranscriptExecutor::new(replies(
+                &inv,
+                Some(Reply::Data(json!([route("peer-a-1", "main"), unresolved]))),
+            ));
+            let snap = snapshot(&io, WITH_ROUTES).await;
+            assert!(
+                matches!(snap.routes, NativeRead::Unavailable(_)),
+                "evidence={evidence}"
+            );
+            assert_eq!(io.mutation_attempts(), 0);
+        }
     }
 
     #[tokio::test]
