@@ -13,6 +13,9 @@ use crate::router::{RouterConfig, RouterVendor, SSH_MUX_CONTROL_PATH};
 
 mod mikrotik;
 
+#[cfg(test)]
+pub(crate) use mikrotik::process_support as native_process_test_support;
+
 pub use mikrotik::{
     NativeCommand, NativeCommandKind, NativeEndpoint, NativeExecutor, NativeLease,
     NativeRegistration,

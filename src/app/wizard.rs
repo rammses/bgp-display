@@ -6,7 +6,8 @@ use crate::router::RouterVendor;
 
 impl App {
     pub fn wizard_open_create(&mut self) {
-        if self.reject_native_management() {
+        if self.is_native_selected() {
+            self.open_native_create();
             return;
         }
         self.wizard_mode = WizardMode::NeighborCreate;
@@ -20,7 +21,8 @@ impl App {
     }
 
     pub fn wizard_open_edit(&mut self, peer_ip: String) {
-        if self.reject_native_management() {
+        if self.is_native_selected() {
+            self.open_native_edit();
             return;
         }
         let router_id = self.selected_router().map(|r| r.id);
@@ -87,7 +89,8 @@ impl App {
     }
 
     pub fn wizard_open_delete(&mut self, peer_ip: String) {
-        if self.reject_native_management() {
+        if self.is_native_selected() {
+            self.open_native_delete();
             return;
         }
         self.wizard_mode = WizardMode::NeighborDelete(peer_ip.clone());
@@ -129,9 +132,6 @@ impl App {
     }
 
     pub fn load_config_history(&mut self) {
-        if self.reject_native_management() {
-            return;
-        }
         if let Some(router) = self.selected_router() {
             let rid = router.id;
             if let Some(db) = &self.router_db {
@@ -156,13 +156,16 @@ impl App {
             self.set_status("MikroTik native management unavailable — rollback rejected");
             return;
         }
-        if entry.rollback.is_empty() {
-            self.set_status("No rollback commands available for this entry");
+        if !entry.is_replayable() {
+            self.set_status(
+                "Entry is non-replayable or has no rollback commands; use a fresh preview",
+            );
             return;
         }
         self.send_fetch(FetchRequest::RollbackConfig {
             router_id: entry.router_id,
             history_id: entry.id,
+            history_action: entry.action,
             commands: entry.rollback.clone(),
             description: format!("Rollback: {}", entry.description),
         });

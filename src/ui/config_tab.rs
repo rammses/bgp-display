@@ -190,7 +190,7 @@ fn draw_right_panel(f: &mut Frame, app: &App, area: Rect) {
         .is_some_and(|r| r.vendor == crate::router::RouterVendor::MikroTik)
     {
         let mut lines = vec![
-            Line::from("Native monitoring — management unavailable"),
+            Line::from("Native neighbor management — explicit review; filters read-only"),
             Line::from("Config navigation uses this displayed snapshot only."),
             Line::from("Audit: nested/other-protocol filter consumers unknown."),
             Line::from("Advertisements / MTU unavailable; no hidden probes."),

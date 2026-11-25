@@ -2,6 +2,7 @@ mod a10;
 mod cisco;
 mod cumulus;
 mod fortigate;
+pub(crate) mod mikrotik;
 mod vyos;
 
 use crate::bgp::naming::{generate_cumulus_policy_names, generate_policy_names};

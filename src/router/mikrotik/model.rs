@@ -83,6 +83,95 @@ pub struct MikroTikSnapshot {
     pub fetched_at: chrono::DateTime<chrono::Utc>,
 }
 
+pub enum SecretChange {
+    Keep,
+    Replace(String),
+    Clear,
+}
+
+pub struct NativeConnectionDraft {
+    pub name: String,
+    pub remote_address: std::net::IpAddr,
+    pub remote_as: u32,
+    pub role: String,
+    pub afi: Vec<String>,
+    pub source: Option<std::net::IpAddr>,
+    pub comment: String,
+    pub hold_time: Option<String>,
+    pub keepalive_time: Option<String>,
+    pub nexthop_choice: Option<String>,
+    pub use_bfd: Option<bool>,
+    pub secret: SecretChange,
+}
+
+pub struct NativePatch {
+    pub properties: Properties,
+    pub secret: SecretChange,
+}
+
+pub enum NativeIntent {
+    Create(NativeConnectionDraft),
+    Patch {
+        target: NativeConnectionRef,
+        changes: NativePatch,
+    },
+    SetDisabled {
+        target: NativeConnectionRef,
+        disabled: bool,
+    },
+    Delete(NativeConnectionRef),
+}
+
+pub struct NativePreview {
+    pub router_id: Uuid,
+    pub operation: Uuid,
+    pub registration: NativeRegistration,
+    pub generation: Uuid,
+    pub instance: String,
+    pub guard: ConfigGuard,
+    pub intent: NativeIntent,
+    pub visible_diff: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+// None of the draft/intent/compiled byte holders implement general serde or
+// value-bearing Debug. Even comments/properties may contain pasted credentials.
+macro_rules! redacted_debug {
+    ($($ty:ty),+ $(,)?) => { $(impl std::fmt::Debug for $ty {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str(concat!(stringify!($ty), " { [redacted] }"))
+        }
+    })+ };
+}
+redacted_debug!(
+    SecretChange,
+    NativeConnectionDraft,
+    NativePatch,
+    NativeIntent,
+    NativePreview
+);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NativeOutcome {
+    RejectedBeforeWrite,
+    VerifiedApplied,
+    PartialApplication,
+    Indeterminate,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeReceipt {
+    pub router_id: Uuid,
+    pub operation: Uuid,
+    pub instance: String,
+    pub registration: NativeRegistration,
+    pub outcome: NativeOutcome,
+    pub verified_steps: Vec<String>,
+    pub uncertain_steps: Vec<String>,
+    pub unapplied_steps: Vec<String>,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 // The approved Task3 caller contract returns Snapshot(MikroTikSnapshot), not a
 // boxed variant. Keep that boundary verbatim rather than silently changing it.

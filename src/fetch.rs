@@ -22,7 +22,13 @@ pub async fn run_data_fetch_service(
     mut fetch_rx: mpsc::UnboundedReceiver<FetchRequest>,
 ) {
     tracing::info!("data fetch service started");
+    let mut native_operations = std::collections::HashSet::new();
     while let Some(req) = fetch_rx.recv().await {
+        if let FetchRequest::ApplyMikroTik(preview) = &req {
+            if !native_operations.insert(preview.operation) {
+                continue;
+            }
+        }
         let req = match req {
             FetchRequest::UpdateNativeRegistration(config) => {
                 ssh.register_router(config).await;
@@ -49,6 +55,19 @@ async fn handle_request(
     req: FetchRequest,
 ) {
     match req {
+        FetchRequest::ApplyMikroTik(preview) => {
+            // Getting config does not authorize a new token: the backend always
+            // acquires the ORIGINAL preview registration, including after queueing.
+            let receipt = match ssh.get_config(preview.router_id).await {
+                Some(config) => {
+                    crate::router::mikrotik::MikroTikBackend::new(&config, Arc::clone(&ssh))
+                        .apply(preview)
+                        .await
+                }
+                None => crate::router::mikrotik::rejected_receipt(&preview),
+            };
+            let _ = tx.send(AppEvent::MikroTikApplied(receipt));
+        }
         FetchRequest::UpdateNativeRegistration(_) | FetchRequest::RemoveNativeRegistration(_) => {
             // These controls are handled inline by the receive loop, never spawned.
         }
@@ -117,10 +136,20 @@ async fn handle_request(
         }
         FetchRequest::RollbackConfig {
             router_id,
+            history_action,
             commands,
             description,
             ..
         } => {
+            if crate::db::ConfigHistoryEntry::is_native_receipt_action(&history_action) {
+                let _ = tx.send(AppEvent::ConfigError {
+                    router_id,
+                    description: "Native history replay rejected".into(),
+                    error: "MikroTik receipt is non-replayable; create a fresh reviewed operation"
+                        .into(),
+                });
+                return;
+            }
             apply_config(&ssh, &tx, router_id, &commands, &description).await;
         }
         FetchRequest::Ping(targets) => {
@@ -776,6 +805,65 @@ mod native_tests {
     use crate::app::NativeRouteRequest;
     use crate::bgp::PeerKey;
     use crate::router::mikrotik::{test_support::documented_snapshot, NativeRead};
+
+    #[tokio::test]
+    async fn mikrotik_receipt_service_rejects_native_provenance_after_vendor_change() {
+        let cfg = crate::router::RouterConfig {
+            vendor: RouterVendor::Cisco,
+            ..crate::router::RouterConfig::default()
+        };
+        let ssh = SshSessionManager::new(&[cfg.clone()]);
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        handle_request(
+            ssh,
+            tx,
+            FetchRequest::RollbackConfig {
+                router_id: cfg.id,
+                history_id: Uuid::new_v4(),
+                history_action: "mikrotik_receipt:Indeterminate".into(),
+                commands: vec!["forged executable".into()],
+                description: "test".into(),
+            },
+        )
+        .await;
+        assert!(
+            matches!(rx.try_recv().unwrap(),AppEvent::ConfigError{error,..} if error.contains("non-replayable"))
+        );
+    }
+
+    #[tokio::test]
+    async fn mikrotik_apply_service_duplicate_operation_is_ignored_not_replayed() {
+        use crate::router::mikrotik::{preview_native, NativeIntent};
+        let cfg = crate::router::RouterConfig {
+            id: Uuid::nil(),
+            vendor: RouterVendor::Cisco,
+            ..crate::router::RouterConfig::default()
+        };
+        let manager = SshSessionManager::new(&[cfg]);
+        let snapshot = documented_snapshot();
+        let operation = Uuid::new_v4();
+        let (fetch_tx, fetch_rx) = mpsc::unbounded_channel();
+        let (event_tx, mut event_rx) = mpsc::unbounded_channel();
+        for _ in 0..2 {
+            let preview = preview_native(
+                &snapshot,
+                NativeIntent::Delete(snapshot.peers[0].connection.clone().unwrap()),
+                operation,
+            )
+            .unwrap();
+            assert!(fetch_tx.send(FetchRequest::ApplyMikroTik(preview)).is_ok());
+        }
+        drop(fetch_tx);
+        run_data_fetch_service(manager, event_tx, fetch_rx).await;
+        let mut receipts = 0;
+        while let Some(event) = event_rx.recv().await {
+            if let AppEvent::MikroTikApplied(receipt) = event {
+                assert_eq!(receipt.operation, operation);
+                receipts += 1;
+            }
+        }
+        assert_eq!(receipts, 1);
+    }
     use crate::router::RouterConfig;
 
     fn config() -> RouterConfig {
@@ -1106,6 +1194,13 @@ mod native_tests {
                 commands: vec!["synthetic-sensitive-command".into()],
                 description: "test".into(),
             },
+            FetchRequest::RollbackConfig {
+                router_id: config.id,
+                history_id: Uuid::new_v4(),
+                history_action: "legacy-create".into(),
+                commands: vec!["synthetic-sensitive-command".into()],
+                description: "test".into(),
+            },
         ] {
             handle_request(Arc::clone(&ssh), tx.clone(), request).await;
         }
@@ -1117,6 +1212,9 @@ mod native_tests {
         );
         assert!(
             matches!(rx.try_recv().unwrap(), AppEvent::ConfigError { error, .. } if error.contains("raw CLI rejected") && !error.contains("synthetic-sensitive-command"))
+        );
+        assert!(
+            matches!(rx.try_recv().unwrap(),AppEvent::ConfigError {error,..} if error.contains("raw CLI rejected"))
         );
         handle_request(
             Arc::clone(&ssh),

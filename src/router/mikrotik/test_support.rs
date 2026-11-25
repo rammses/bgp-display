@@ -121,6 +121,17 @@ pub fn documented_inventory() -> NativeInventory {
     }
 }
 
+pub fn configuration_replies(inv: &NativeInventory) -> Vec<Reply> {
+    vec![
+        Reply::Data(json!(inv.version)),
+        Reply::Data(json!(inv.instances)),
+        Reply::Data(json!(inv.connections)),
+        Reply::Data(json!(inv.templates)),
+        Reply::Data(json!(inv.sessions)),
+        Reply::Data(json!(inv.rules)),
+    ]
+}
+
 /// Synthetic documentation-derived snapshot; never collected from a device.
 pub fn documented_snapshot() -> super::MikroTikSnapshot {
     let inventory = documented_inventory();

@@ -21,6 +21,7 @@ pub enum AppEvent {
     BgpError(Uuid, String),
     NativeData(Uuid, Uuid, Box<crate::router::mikrotik::NativeDiscovery>),
     NativeError(Uuid, Uuid, String),
+    MikroTikApplied(crate::router::mikrotik::NativeReceipt),
     NativeRoutes(
         crate::app::NativeRouteRequest,
         crate::router::mikrotik::NativeRead<Vec<crate::bgp::BgpRoute>>,
@@ -72,7 +73,12 @@ pub enum AppEvent {
 // ─── Fetch Requests (App → DataFetchService) ────────────────────────────────
 
 /// Messages sent from the App to the background DataFetchService.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "approved inline ApplyMikroTik(NativePreview) request contract; do not silently box or serialize intentions"
+)]
 pub enum FetchRequest {
+    ApplyMikroTik(crate::router::mikrotik::NativePreview),
     RefreshMikroTik {
         router_id: Uuid,
         request: Uuid,
@@ -116,6 +122,7 @@ pub enum FetchRequest {
     /// Rollback a previous config change by applying the stored rollback commands.
     RollbackConfig {
         router_id: Uuid,
+        history_action: String,
         #[allow(dead_code)]
         history_id: Uuid,
         commands: Vec<String>,

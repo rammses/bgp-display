@@ -5,6 +5,65 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use uuid::Uuid;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeEditorStage {
+    Fields,
+    Review,
+    Applying,
+    Result,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NativeEditorMode {
+    Create,
+    Patch,
+    Admin(bool),
+    Delete,
+}
+
+pub struct NativeEditorDraft {
+    pub values: Vec<String>,
+    pub changed: std::collections::BTreeSet<usize>,
+}
+
+pub struct NativeEditorState {
+    pub base: Arc<MikroTikSnapshot>,
+    pub router_id: Uuid,
+    pub instance: String,
+    pub generation: Uuid,
+    pub registration: NativeRegistration,
+    pub target: Option<NativeConnectionRef>,
+    pub draft: NativeEditorDraft,
+    pub preview: Option<crate::router::mikrotik::NativePreview>,
+    pub stage: NativeEditorStage,
+    pub operation: Uuid,
+    pub(crate) mode: NativeEditorMode,
+    pub field: usize,
+    pub scroll: u16,
+    pub error: Option<String>,
+    pub receipt: Option<crate::router::mikrotik::NativeReceipt>,
+}
+
+impl std::fmt::Debug for NativeEditorState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeEditorState")
+            .field("stage", &self.stage)
+            .field("operation", &self.operation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl NativeEditorDraft {
+    pub(crate) fn clear_secret(&mut self) {
+        if let Some(secret) = self.values.get_mut(14) {
+            secret.clear();
+        }
+        if let Some(mode) = self.values.get_mut(13) {
+            *mode = "Keep".into();
+        }
+    }
+}
+
 // ─── Editor Mode ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]

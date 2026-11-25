@@ -508,7 +508,10 @@ fn inherit_as(
     Ok(inherited)
 }
 
-fn effective_local_as(inv: &NativeInventory, connection: &NativeRecord) -> Result<Option<u32>> {
+pub(crate) fn effective_local_as(
+    inv: &NativeInventory,
+    connection: &NativeRecord,
+) -> Result<Option<u32>> {
     let templates = inv
         .templates
         .iter()
@@ -944,6 +947,28 @@ pub async fn fetch_native<E: NativeExecutor>(
     request: Uuid,
     instance: Option<&str>,
 ) -> Result<NativeDiscovery> {
+    fetch_native_inner(io, registration, request, instance, true).await
+}
+
+pub(super) async fn fetch_configuration<E: NativeExecutor>(
+    io: &E,
+    registration: &NativeRegistration,
+    request: Uuid,
+    instance: &str,
+) -> Result<MikroTikSnapshot> {
+    match fetch_native_inner(io, registration, request, Some(instance), false).await? {
+        NativeDiscovery::Snapshot(snapshot) => Ok(snapshot),
+        NativeDiscovery::Instances { .. } => anyhow::bail!("native selected scope unavailable"),
+    }
+}
+
+async fn fetch_native_inner<E: NativeExecutor>(
+    io: &E,
+    registration: &NativeRegistration,
+    request: Uuid,
+    instance: Option<&str>,
+    read_routes: bool,
+) -> Result<NativeDiscovery> {
     let version = execute(io, request, NativeMenu::Version).await?;
     let version = version
         .as_str()
@@ -985,15 +1010,19 @@ pub async fn fetch_native<E: NativeExecutor>(
     let generation = Uuid::new_v4();
     let peers = join_native_peers(&inventory, instance, generation)?;
     let guard = read_guard(&inventory, instance)?;
-    let routes = match route_read_prerequisites(&inventory, &peers) {
-        Err(error) => NativeRead::Unavailable(error.to_string()),
-        Ok(()) => match execute(io, request, NativeMenu::Routes).await {
-            Ok(data) => match scoped_routes(data, &inventory, &peers) {
-                Ok(routes) => NativeRead::Available(routes),
-                Err(error) => NativeRead::Unavailable(error.to_string()),
+    let routes = if !read_routes {
+        NativeRead::Unavailable("configuration-only read; RIB not queried".into())
+    } else {
+        match route_read_prerequisites(&inventory, &peers) {
+            Err(error) => NativeRead::Unavailable(error.to_string()),
+            Ok(()) => match execute(io, request, NativeMenu::Routes).await {
+                Ok(data) => match scoped_routes(data, &inventory, &peers) {
+                    Ok(routes) => NativeRead::Available(routes),
+                    Err(error) => NativeRead::Unavailable(error.to_string()),
+                },
+                Err(_) => NativeRead::Unavailable("native stored-route read unavailable".into()),
             },
-            Err(_) => NativeRead::Unavailable("native stored-route read unavailable".into()),
-        },
+        }
     };
     // S7 exposes a peer enum but does not establish its session-link encoding or
     // reconcile retention prerequisites. Do not treat an IP/name guess or an

@@ -11,6 +11,12 @@ use super::App;
 pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     use crossterm::event::{KeyCode, KeyModifiers};
 
+    // A native intention owns all input before ANY legacy wizard interception.
+    if app.native_editor.is_some() {
+        app.handle_native_editor_key(key);
+        return;
+    }
+
     // ── Confirmation dialog intercepts all input ─────────────────────────────
     if app.confirm_action.is_some() {
         match key.code {
@@ -589,9 +595,6 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // ── Config history popup (Config tab) ─────────────────────────────────
         KeyCode::Char('h') if app.current_tab == ActiveTab::Config => {
-            if app.reject_native_management() {
-                return;
-            }
             app.load_config_history();
             app.show_history = true;
             if !app.config_history.is_empty() {
@@ -716,7 +719,8 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
 
         // ── Route-map / Prefix-list / Community-list editors (Config tab) ──
         KeyCode::Char('e') if app.current_tab == ActiveTab::Config => {
-            if app.reject_native_management() {
+            if app.is_native_selected() {
+                app.open_native_config_target();
                 return;
             }
             if let Some(line) = app

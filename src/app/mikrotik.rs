@@ -180,7 +180,7 @@ pub(crate) fn project_native(snapshot: &MikroTikSnapshot) -> Result<NativeProjec
         None,
     );
     push(
-        "Native management unavailable (monitoring only)".into(),
+        "Native neighbor management: confirmed/guarded; filters read-only until native filter editor".into(),
         None,
     );
     push("Selected effective-main observations only; audit rows excluded from peer totals. Unknown counts: N/A.".into(), None);
@@ -196,7 +196,7 @@ pub(crate) fn project_native(snapshot: &MikroTikSnapshot) -> Result<NativeProjec
         let reason = row
             .read_only_reason
             .as_deref()
-            .unwrap_or("monitoring only; management unavailable");
+            .unwrap_or("eligible for guarded native neighbor management");
         push(
             format!(
                 "connection {} [{}] — {reason}",
@@ -321,7 +321,7 @@ pub(crate) fn project_native(snapshot: &MikroTikSnapshot) -> Result<NativeProjec
         if let Some(chain) = text(rule, "chain") {
             if chains.insert(chain.to_owned()) {
                 push(
-                    format!("filter chain {chain} — native management unavailable"),
+                    format!("filter chain {chain} — filters read-only"),
                     Some(NativeConfigTarget::Chain(chain.into())),
                 );
             }
@@ -478,7 +478,7 @@ impl App {
 
     pub(crate) fn reject_native_management(&mut self) -> bool {
         if self.is_native_selected() {
-            self.set_status("MikroTik native management unavailable — monitoring only");
+            self.set_status("MikroTik: generic CLI/clone/policy/template editing unavailable; use native neighbor controls. Filters remain read-only.");
             true
         } else {
             false
@@ -553,6 +553,17 @@ impl App {
 
     /// Invalidate BEFORE registration control and any subsequent tracked read.
     pub(crate) fn invalidate_native(&mut self, id: Uuid) {
+        if self
+            .native_editor
+            .as_ref()
+            .is_some_and(|e| e.router_id == id)
+        {
+            self.native_editor = None; // config save/delete/vendor change drops secrets
+        }
+        self.invalidate_native_views(id);
+    }
+
+    pub(crate) fn invalidate_native_views(&mut self, id: Uuid) {
         self.native_refresh_pending.remove(&id);
         self.native_cache.remove(&id);
         self.bgp_cache.remove(&id);
@@ -705,7 +716,7 @@ impl App {
             return;
         };
         cache.stale_reason = Some(presentation_text(&safe_error));
-        if self.selected_router().is_some_and(|r| r.id == id) {
+        if self.selected_router().is_some_and(|r| r.id == id) && self.native_editor.is_none() {
             self.set_status(format!(
                 "Native data stale/unavailable: {}",
                 presentation_text(&safe_error)

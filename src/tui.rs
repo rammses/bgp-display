@@ -134,6 +134,7 @@ async fn run_loop<B: ratatui::backend::Backend>(
                 app.handle_native_error(id, request, error)
             }
             AppEvent::NativeRoutes(request, routes) => app.handle_native_routes(request, routes),
+            AppEvent::MikroTikApplied(receipt) => app.handle_native_receipt(receipt),
             AppEvent::RouteData(id, routes) => app.handle_route_data(id, routes),
             AppEvent::RouteMapDetail(id, d) => {
                 if !app.is_native_router(id) {
@@ -213,6 +214,7 @@ fn event_name(ev: &AppEvent) -> &'static str {
         AppEvent::NativeData(..) => "NativeData",
         AppEvent::NativeError(..) => "NativeError",
         AppEvent::NativeRoutes(..) => "NativeRoutes",
+        AppEvent::MikroTikApplied(..) => "MikroTikApplied",
         AppEvent::RouteData(..) => "RouteData",
         AppEvent::RouteMapDetail(..) => "RouteMapDetail",
         AppEvent::PeerRoutes(..) => "PeerRoutes",

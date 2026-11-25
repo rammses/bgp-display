@@ -128,7 +128,7 @@ fn draw_summary_info(f: &mut Frame, app: &App, area: Rect) {
                 "  Selected-main observed peers only; unknown/unscoped audit rows excluded",
             ));
             lines.push(Line::from(
-                "  Native management / advertisements / MTU unavailable",
+                "  Guarded neighbor management available; filter editing / advertisements / MTU unavailable",
             ));
             if let Some(reason) = app
                 .native_cache

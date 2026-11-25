@@ -18,6 +18,7 @@ mod filters;
 mod helpers;
 mod keys;
 mod mikrotik;
+mod mikrotik_editor;
 mod peer_actions;
 mod policy_editors;
 mod projects;
@@ -32,6 +33,7 @@ pub(crate) use helpers::truncate_error;
 pub use helpers::{apply_buf_to_draft, editor_field_value};
 pub use keys::handle_key;
 pub(crate) use mikrotik::native_stored_peer_routes;
+pub(crate) use mikrotik_editor::NATIVE_FIELDS;
 pub use types::*;
 
 // ─── App State ────────────────────────────────────────────────────────────────
@@ -56,6 +58,8 @@ pub struct App {
     pub native_cache: HashMap<Uuid, NativeCache>,
     pub native_view: Option<NativePresentation>,
     pub pending_native_view: Option<NativePresentation>,
+    pub native_editor: Option<NativeEditorState>,
+    native_receipts: HashMap<Uuid, crate::router::mikrotik::NativeReceipt>,
 
     // BGP data for the currently selected router
     pub current_summary: Option<BgpSummary>,
@@ -276,6 +280,8 @@ impl App {
             native_cache: HashMap::new(),
             native_view: None,
             pending_native_view: None,
+            native_editor: None,
+            native_receipts: HashMap::new(),
             current_summary: None,
             current_peers: vec![],
             current_routes: vec![],

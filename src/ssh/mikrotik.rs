@@ -19,6 +19,9 @@ use tokio::process::Command;
 use tokio::sync::{OwnedMutexGuard, RwLock};
 use uuid::Uuid;
 
+#[cfg(test)]
+pub(crate) use tests::process_support;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeCommandKind {
     Read,
@@ -665,6 +668,150 @@ mod tests {
                 reap_gate: None,
                 stats,
             })
+        }
+    }
+
+    // Task5 test-only facade: reuse the REAL lease/command/owner/collector/
+    // status/stderr/decoder, replacing only the external child and its streams.
+    pub(crate) mod process_support {
+        use super::*;
+        use std::collections::VecDeque;
+
+        pub(crate) struct LaunchGate {
+            gate: Arc<ReapGate>,
+            launched: Arc<Notify>,
+        }
+        impl LaunchGate {
+            pub(crate) fn new() -> Self {
+                Self {
+                    gate: Arc::new(ReapGate::default()),
+                    launched: Arc::new(Notify::new()),
+                }
+            }
+            pub(crate) async fn launched(&self) {
+                self.launched.notified().await;
+            }
+            pub(crate) fn release(&self) {
+                self.gate.release();
+            }
+        }
+        impl Drop for LaunchGate {
+            fn drop(&mut self) {
+                self.release();
+            }
+        }
+
+        pub(crate) struct ScriptedReply {
+            label: &'static str,
+            data: Value,
+            success: bool,
+            gate: Option<(Arc<ReapGate>, Arc<Notify>)>,
+        }
+        impl ScriptedReply {
+            pub(crate) fn data(label: &'static str, data: Value) -> Self {
+                Self {
+                    label,
+                    data,
+                    success: true,
+                    gate: None,
+                }
+            }
+            pub(crate) fn blocked(mut self, gate: &LaunchGate) -> Self {
+                self.gate = Some((Arc::clone(&gate.gate), Arc::clone(&gate.launched)));
+                self
+            }
+            pub(crate) fn failed_status(mut self) -> Self {
+                self.success = false;
+                self
+            }
+        }
+
+        pub(crate) struct FakeProcesses {
+            replies: Mutex<VecDeque<ScriptedReply>>,
+            launched: Mutex<Vec<(&'static str, NativeCommandKind, String, Arc<ProcessStats>)>>,
+            gates: Mutex<Vec<Arc<ReapGate>>>,
+        }
+
+        impl Drop for FakeProcesses {
+            fn drop(&mut self) {
+                // Also release/drain on assertion unwind or canceled test tasks.
+                for gate in self.gates.get_mut().unwrap_or_else(|e| e.into_inner()) {
+                    gate.release();
+                }
+                for (_, _, _, stats) in self.launched.get_mut().unwrap_or_else(|e| e.into_inner()) {
+                    let mut reaped = stats
+                        .reap_complete
+                        .0
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    while !*reaped {
+                        reaped = stats
+                            .reap_complete
+                            .1
+                            .wait(reaped)
+                            .unwrap_or_else(|e| e.into_inner());
+                    }
+                }
+            }
+        }
+        impl FakeProcesses {
+            pub(crate) fn new(replies: Vec<ScriptedReply>) -> Arc<Self> {
+                Arc::new(Self {
+                    replies: Mutex::new(replies.into()),
+                    launched: Mutex::new(Vec::new()),
+                    gates: Mutex::new(Vec::new()),
+                })
+            }
+            pub(crate) fn executor(self: &Arc<Self>, lease: NativeLease) -> FakeLease {
+                FakeLease {
+                    lease,
+                    processes: Arc::clone(self),
+                }
+            }
+            pub(crate) fn launches(&self) -> Vec<(&'static str, NativeCommandKind, String)> {
+                self.launched
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(a, b, c, _)| (*a, *b, c.clone()))
+                    .collect()
+            }
+            pub(crate) fn assert_drained(&self) {
+                for (_, _, _, stats) in self.launched.lock().unwrap().iter() {
+                    // A failed status may trigger a second local wait in the
+                    // real owner's terminate path; this is not another launch.
+                    assert!(stats.reaped.load(Ordering::SeqCst) >= 1);
+                    assert_eq!(stats.unreaped_drops.load(Ordering::SeqCst), 0);
+                }
+            }
+        }
+
+        pub(crate) struct FakeLease {
+            lease: NativeLease,
+            processes: Arc<FakeProcesses>,
+        }
+        impl NativeExecutor for FakeLease {
+            fn exec<'a>(&'a self, command: NativeCommand) -> NativeFuture<'a> {
+                Box::pin(async move {
+                    let (request, label, kind) = (command.request, command.label, command.kind);
+                    self.lease.exec_with(command,|cmd| {
+                        // Pop only at the OS spawn boundary, AFTER the real
+                        // per-exec registry check. Stale rejection consumes none.
+                        let reply=self.processes.replies.lock().unwrap().pop_front().expect("unexpected fake OS launch");
+                        assert_eq!(label,reply.label);
+                        let stats=Arc::new(ProcessStats::default());
+                        let bytes=serde_json::to_vec(&serde_json::json!({"request":request,"ok":true,"data":reply.data})).unwrap();
+                        let mut child=fake(&stats,bytes,vec![],reply.success)(cmd)?;
+                        let target=stats.target.lock().unwrap().as_ref().unwrap().0.clone();
+                        self.processes.launched.lock().unwrap().push((label,kind,target,stats));
+                        if let Some((gate,launched))=reply.gate {
+                            self.processes.gates.lock().unwrap().push(Arc::clone(&gate));
+                            child.reap_gate=Some(gate);launched.notify_one();
+                        }
+                        Ok(child)
+                    },NativeLimits::PRODUCTION).await
+                })
+            }
         }
     }
 

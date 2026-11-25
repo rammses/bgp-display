@@ -10,7 +10,8 @@ impl App {
     // ── Neighbor shutdown toggle ─────────────────────────────────────────────
 
     pub fn toggle_peer_shutdown(&mut self) {
-        if self.reject_native_management() {
+        if self.is_native_selected() {
+            self.open_native_admin();
             return;
         }
         let peer_ip = match self

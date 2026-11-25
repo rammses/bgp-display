@@ -4,6 +4,7 @@ pub mod conn_log;
 pub mod dashboard;
 pub mod help_overlay;
 pub mod logs;
+pub mod mikrotik_neighbor_editor;
 pub mod neighbor_wizard;
 pub mod peer_routes;
 pub mod peers;
@@ -96,6 +97,12 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // Help overlay
     if app.show_help {
         help_overlay::draw(f, app);
+    }
+
+    // Match the highest-priority native key interception: the reviewed native
+    // change must never be obscured by a legacy/help/history modal.
+    if app.native_editor.is_some() {
+        mikrotik_neighbor_editor::draw(f, app);
     }
 }
 
@@ -224,14 +231,23 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
 
     if app.current_tab == ActiveTab::Peers && app.peer_route_view.is_none() {
         keys.push(("Enter", "Peer routes"));
-        keys.push(("m", "MTU probe"));
+        if !app.is_native_selected() {
+            keys.push(("m", "MTU probe"));
+        }
         keys.push(("n", "New neighbor"));
         keys.push(("e", "Edit"));
         keys.push(("x", "Delete"));
         keys.push(("/", "Filter"));
     }
     if app.current_tab == ActiveTab::Config {
-        keys.push(("e", "Edit RM/PL"));
+        keys.push((
+            "e",
+            if app.is_native_selected() {
+                "Native neighbor / filters read-only"
+            } else {
+                "Edit RM/PL"
+            },
+        ));
         keys.push(("h", "History"));
         keys.push(("/", "Filter"));
     }
@@ -299,10 +315,15 @@ fn draw_history_popup(f: &mut Frame, app: &mut App) {
         .config_history
         .iter()
         .map(|entry| {
-            let has_rb = if entry.rollback.is_empty() {
-                ""
+            let action = if crate::db::ConfigHistoryEntry::is_native_receipt_action(&entry.action) {
+                "MikroTik receipt"
             } else {
+                entry.action.as_str()
+            };
+            let has_rb = if entry.is_replayable() {
                 " [undoable]"
+            } else {
+                " [non-replayable]"
             };
             let line = Line::from(vec![
                 Span::styled(
@@ -310,7 +331,7 @@ fn draw_history_popup(f: &mut Frame, app: &mut App) {
                     Style::default().fg(C_DIM),
                 ),
                 Span::raw("  "),
-                Span::styled(&entry.action, Style::default().fg(C_HEADER)),
+                Span::styled(action, Style::default().fg(C_HEADER)),
                 Span::raw("  "),
                 Span::styled(&entry.description, Style::default().fg(Color::White)),
                 Span::styled(has_rb, Style::default().fg(C_ESTABLISHED)),
@@ -581,6 +602,82 @@ mod native_tests {
     }
 
     #[test]
+    fn mikrotik_neighbor_overlay_masks_secret_and_shows_native_review_not_cisco() {
+        let mut app = native_app();
+        app.current_tab = ActiveTab::Peers;
+        app.peer_table_state.select(Some(0));
+        app.wizard_open_edit("ignored".into());
+        let editor = app.native_editor.as_mut().unwrap();
+        editor.draft.values[13] = "Replace".into();
+        editor.draft.values[14] = "SENTINEL_MD5".into();
+        editor.field = 14;
+        let fields = screen(&mut app);
+        assert!(fields.contains("Native neighbor"));
+        assert!(fields.contains("hidden"));
+        assert!(!fields.contains("SENTINEL_MD5"));
+        app.native_generate_preview();
+        let review = screen(&mut app);
+        assert!(review.contains("CONFIRM"));
+        assert!(review.contains("not atomic"));
+        assert!(review.contains("Replace"));
+        assert!(!review.contains("SENTINEL_MD5"));
+        assert!(!review.contains("configure terminal"));
+        crate::app::handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::PageDown,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        assert!(app.native_editor.as_ref().unwrap().scroll > 0);
+        assert_ne!(review, screen(&mut app));
+        crate::app::handle_key(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Home,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+        );
+        app.show_help = true;
+        let foreground = screen(&mut app);
+        assert!(
+            foreground.contains("CONFIRM") && foreground.contains("not atomic"),
+            "native input ownership must also have foreground rendering priority"
+        );
+        assert!(!foreground.contains("Keyboard Shortcuts"),"a background modal must not obscure the reviewed native change while native keys own input");
+    }
+
+    #[test]
+    fn mikrotik_neighbor_form_shows_effective_inherited_value_without_making_an_override() {
+        use crate::router::mikrotik::{config_guard, join_native_peers, test_support::record};
+        let mut app = native_app();
+        let mut snapshot = documented_snapshot();
+        snapshot.inventory.templates.push(record(
+            serde_json::json!({".id":"*A","name":"parent","hold-time":"3m"}),
+        ));
+        snapshot.inventory.connections[0]
+            .props
+            .insert("templates".into(), serde_json::json!("parent"));
+        snapshot.guard = config_guard(&snapshot.inventory, "blue").unwrap();
+        snapshot.peers =
+            join_native_peers(&snapshot.inventory, "blue", snapshot.generation).unwrap();
+        app.request_native_refresh(snapshot.router_id);
+        snapshot.request = app.native_cache[&snapshot.router_id].latest_request;
+        app.handle_native_data(
+            snapshot.router_id,
+            snapshot.request,
+            NativeDiscovery::Snapshot(snapshot),
+        );
+        app.current_tab = ActiveTab::Peers;
+        app.peer_table_state.select(Some(0));
+        app.wizard_open_edit("ignored".into());
+        assert!(screen(&mut app).contains("inherited 3m"));
+        let editor = app.native_editor.as_ref().unwrap();
+        assert!(editor.draft.values[7].is_empty());
+        assert!(!editor.draft.changed.contains(&7));
+    }
+
+    #[test]
     fn mikrotik_unknowns_ui_renders_partial_observations_not_measured_down() {
         let mut app = native_app();
         let output = screen(&mut app);
@@ -620,7 +717,7 @@ mod native_tests {
         app.current_tab = ActiveTab::Config;
         let output = screen(&mut app);
         assert!(output.contains("other-protocol"));
-        assert!(output.contains("management unavailable"));
+        assert!(output.contains("filters read-only"));
         assert!(!output.contains("configure terminal"));
     }
 
