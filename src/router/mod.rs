@@ -9,6 +9,7 @@ pub mod citrix;
 pub mod commands;
 pub mod cumulus;
 pub mod fortigate;
+pub mod mikrotik;
 pub mod pfsense;
 pub mod vyos;
 
