@@ -4,18 +4,59 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{mpsc, Mutex, RwLock};
 use uuid::Uuid;
 
 use crate::events::AppEvent;
 use crate::logging::thresholds;
 use crate::router::{RouterConfig, SSH_MUX_CONTROL_PATH};
 
+mod mikrotik;
+
+// Staged native consumers arrive in Tasks3–4; reassess these local allowances then.
+#[cfg_attr(not(test), allow(unused_imports))]
+pub use mikrotik::{
+    NativeCommand, NativeCommandKind, NativeEndpoint, NativeExecError, NativeExecutor,
+    NativeFuture, NativeLease, NativeRegistration,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionState {
     Warming,
     Ready,
     Dead(String),
+}
+
+pub(super) struct RegisteredSession {
+    config: RouterConfig,
+    state: SessionState,
+    // Staged native registration/lease consumers arrive in Tasks3–4.
+    #[cfg_attr(not(test), allow(dead_code))]
+    native_revision: Uuid,
+}
+
+impl RegisteredSession {
+    fn new(config: RouterConfig) -> Self {
+        Self {
+            config,
+            state: SessionState::Warming,
+            native_revision: Uuid::new_v4(),
+        }
+    }
+
+    // Staged native registration/lease consumers arrive in Tasks3–4.
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn native_registration(&self) -> NativeRegistration {
+        NativeRegistration {
+            router_id: self.config.id,
+            revision: self.native_revision,
+            endpoint: NativeEndpoint {
+                hostname: self.config.hostname.clone(),
+                ssh_port: self.config.ssh_port,
+                username: self.config.username.clone(),
+            },
+        }
+    }
 }
 
 /// Centralized SSH connection manager.
@@ -25,17 +66,21 @@ pub enum SessionState {
 /// `run_shell_pipe` as the single entry point for all SSH transport.
 /// Mux-error retry is handled internally so callers never need to.
 pub struct SshSessionManager {
-    sessions: RwLock<HashMap<Uuid, (RouterConfig, SessionState)>>,
+    sessions: Arc<RwLock<HashMap<Uuid, RegisteredSession>>>,
+    // Staged native endpoint lease consumers arrive in Tasks3–4.
+    #[cfg_attr(not(test), allow(dead_code))]
+    native_endpoints: Mutex<HashMap<NativeEndpoint, Arc<Mutex<()>>>>,
 }
 
 impl SshSessionManager {
     pub fn new(routers: &[RouterConfig]) -> Arc<Self> {
         let sessions = routers
             .iter()
-            .map(|r| (r.id, (r.clone(), SessionState::Warming)))
+            .map(|r| (r.id, RegisteredSession::new(r.clone())))
             .collect();
         Arc::new(Self {
-            sessions: RwLock::new(sessions),
+            sessions: Arc::new(RwLock::new(sessions)),
+            native_endpoints: Mutex::new(HashMap::new()),
         })
     }
 
@@ -45,7 +90,7 @@ impl SshSessionManager {
         self.sessions
             .write()
             .await
-            .insert(router.id, (router, SessionState::Warming));
+            .insert(router.id, RegisteredSession::new(router));
     }
 
     #[allow(dead_code)]
@@ -59,7 +104,57 @@ impl SshSessionManager {
             .read()
             .await
             .get(&router_id)
-            .map(|(cfg, _)| cfg.clone())
+            .map(|session| session.config.clone())
+    }
+
+    // Staged native consumers arrive in Tasks3–4; tokens never contain credentials.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn native_registration(&self, router_id: Uuid) -> Result<NativeRegistration> {
+        self.sessions
+            .read()
+            .await
+            .get(&router_id)
+            .map(RegisteredSession::native_registration)
+            .ok_or_else(|| anyhow::anyhow!("stale-native-registration"))
+    }
+
+    // Staged native consumers arrive in Tasks3–4; hold one lease over the sequence.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub async fn native_lease(&self, expected: &NativeRegistration) -> Result<NativeLease> {
+        {
+            let sessions = self.sessions.read().await;
+            if !sessions
+                .get(&expected.router_id)
+                .is_some_and(|session| session.native_registration() == *expected)
+            {
+                bail!("stale-native-registration");
+            }
+        }
+        // Never hold the session registry across the endpoint-lock wait, and
+        // never resolve an endpoint from the UUID again after this first check.
+        let endpoint_lock = {
+            let mut endpoints = self.native_endpoints.lock().await;
+            Arc::clone(
+                endpoints
+                    .entry(expected.endpoint.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(()))),
+            )
+        };
+        let permit = endpoint_lock.lock_owned().await;
+        let config = {
+            let sessions = self.sessions.read().await;
+            let session = sessions
+                .get(&expected.router_id)
+                .filter(|session| session.native_registration() == *expected)
+                .ok_or_else(|| anyhow::anyhow!("stale-native-registration"))?;
+            session.config.clone()
+        };
+        Ok(NativeLease::new(
+            config,
+            expected.clone(),
+            Arc::clone(&self.sessions),
+            permit,
+        ))
     }
 
     // ── Connection warming ──────────────────────────────────────────────────
@@ -73,7 +168,7 @@ impl SshSessionManager {
             .read()
             .await
             .values()
-            .map(|(c, _)| c.clone())
+            .map(|session| session.config.clone())
             .collect();
 
         let total = configs.len();
@@ -110,8 +205,8 @@ impl SshSessionManager {
                             )
                         }
                     };
-                    if let Some((_, state)) = this.sessions.write().await.get_mut(&id) {
-                        *state = new_state;
+                    if let Some(session) = this.sessions.write().await.get_mut(&id) {
+                        session.state = new_state;
                     }
                     err
                 })
@@ -148,7 +243,7 @@ impl SshSessionManager {
             .read()
             .await
             .iter()
-            .map(|(&id, (cfg, _))| (id, cfg.clone()))
+            .map(|(&id, session)| (id, session.config.clone()))
             .collect();
 
         tracing::debug!(count = entries.len(), "starting SSH health check");
@@ -183,12 +278,12 @@ impl SshSessionManager {
                     .is_ok_and(|r| r.is_ok_and(|o| o.status.success()));
 
                     let mut sessions = this.sessions.write().await;
-                    if let Some((_, state)) = sessions.get_mut(&id) {
+                    if let Some(session) = sessions.get_mut(&id) {
                         if healthy {
-                            *state = SessionState::Ready;
+                            session.state = SessionState::Ready;
                         } else {
                             tracing::debug!(router = %name, "health check failed — marking dead");
-                            *state = SessionState::Dead("health check failed".into());
+                            session.state = SessionState::Dead("health check failed".into());
                         }
                     }
                     (id, name, healthy)
@@ -231,8 +326,8 @@ impl SshSessionManager {
                         }
                     };
                     let rewarmed = matches!(new_state, SessionState::Ready);
-                    if let Some((_, state)) = this.sessions.write().await.get_mut(&id) {
-                        *state = new_state;
+                    if let Some(session) = this.sessions.write().await.get_mut(&id) {
+                        session.state = new_state;
                     }
                     (name, rewarmed)
                 })
@@ -553,7 +648,7 @@ impl SshSessionManager {
             .read()
             .await
             .values()
-            .map(|(c, _)| c.clone())
+            .map(|session| session.config.clone())
             .collect();
         crate::router::cleanup_ssh_sessions(&routers).await;
     }
