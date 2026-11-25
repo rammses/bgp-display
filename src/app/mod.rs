@@ -138,6 +138,8 @@ pub struct App {
     bgp_refresh_tick: u16,
     // Native timing is independent of legacy tab keys that accelerate refresh.
     native_refresh_tick: u16,
+    // Actual dispatched native reads, separate from the public cache/view DTOs.
+    native_refresh_pending: HashMap<Uuid, Uuid>,
 
     // Debounced route-map SSH fetch — set in on_config_nav(), drained once per tick
     routemap_fetch_queued: Option<String>,
@@ -325,6 +327,7 @@ impl App {
             ping_tick: 0,
             bgp_refresh_tick: 0,
             native_refresh_tick: 0,
+            native_refresh_pending: HashMap::new(),
             routemap_fetch_queued: None,
             pending_bgp_update: None,
             pending_route_update: None,

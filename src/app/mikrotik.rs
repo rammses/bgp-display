@@ -495,6 +495,11 @@ impl App {
         };
         let instance = selected_instance(router).map(str::to_owned);
         let request = Uuid::new_v4();
+        let previous_request = self
+            .native_cache
+            .get(&router_id)
+            .map(|cache| cache.latest_request);
+        let previous_pending = self.native_refresh_pending.insert(router_id, request);
         self.native_cache
             .entry(router_id)
             .or_insert_with(|| NativeCache {
@@ -504,15 +509,51 @@ impl App {
                 stale_reason: None,
             })
             .latest_request = request;
-        self.send_fetch(FetchRequest::RefreshMikroTik {
-            router_id,
-            request,
-            instance,
+        let dispatched = self.fetch_tx.as_ref().is_some_and(|tx| {
+            tx.send(FetchRequest::RefreshMikroTik {
+                router_id,
+                request,
+                instance,
+            })
+            .is_ok()
         });
+        if !dispatched {
+            // A failed send is not outstanding work and must not supersede a
+            // request that really was sent. Keep initial cache metadata usable
+            // even without a service, but never strand automatic polling.
+            match previous_pending {
+                Some(previous) => {
+                    self.native_refresh_pending.insert(router_id, previous);
+                }
+                None => {
+                    self.native_refresh_pending.remove(&router_id);
+                }
+            }
+            if let Some(cache) = self.native_cache.get_mut(&router_id) {
+                if let Some(previous) = previous_request {
+                    cache.latest_request = previous;
+                }
+                cache.stale_reason =
+                    Some("Native refresh not dispatched: fetch service unavailable".into());
+            }
+        }
+    }
+
+    pub(crate) fn request_native_refresh_automatic(&mut self, router_id: Uuid) {
+        if !self.native_refresh_pending.contains_key(&router_id) {
+            self.request_native_refresh(router_id);
+        }
+    }
+
+    fn finish_native_refresh(&mut self, router_id: Uuid, request: Uuid) {
+        if self.native_refresh_pending.get(&router_id) == Some(&request) {
+            self.native_refresh_pending.remove(&router_id);
+        }
     }
 
     /// Invalidate BEFORE registration control and any subsequent tracked read.
     pub(crate) fn invalidate_native(&mut self, id: Uuid) {
+        self.native_refresh_pending.remove(&id);
         self.native_cache.remove(&id);
         self.bgp_cache.remove(&id);
         self.routemap_cache
@@ -558,6 +599,7 @@ impl App {
     }
 
     pub fn handle_native_data(&mut self, id: Uuid, request: Uuid, discovery: NativeDiscovery) {
+        self.finish_native_refresh(id, request);
         if !self
             .native_cache
             .get(&id)
@@ -654,6 +696,7 @@ impl App {
     }
 
     pub fn handle_native_error(&mut self, id: Uuid, request: Uuid, safe_error: String) {
+        self.finish_native_refresh(id, request);
         let Some(cache) = self
             .native_cache
             .get_mut(&id)
@@ -872,6 +915,239 @@ mod tests {
         let id = snapshot.router_id;
         snapshot.request = app.native_cache[&id].latest_request;
         app.handle_native_data(id, snapshot.request, NativeDiscovery::Snapshot(snapshot));
+    }
+
+    fn automatic_poll(app: &mut App) {
+        // Withhold terminal events while advancing the actual 30s timer, not
+        // wall-clock time. Ping requests are only queued; no worker is running.
+        for _ in 0..150 {
+            app.tick();
+        }
+    }
+
+    fn take_native_requests(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<FetchRequest>,
+    ) -> Vec<(Uuid, Option<String>)> {
+        let mut requests = Vec::new();
+        while let Ok(request) = rx.try_recv() {
+            if let FetchRequest::RefreshMikroTik {
+                request, instance, ..
+            } = request
+            {
+                requests.push((request, instance));
+            }
+        }
+        requests
+    }
+
+    #[test]
+    fn mikrotik_rev_001_slow_automatic_read_publishes_without_poll_starvation() {
+        let (mut app, mut rx) = app();
+        app.router_status
+            .insert(Uuid::nil(), ConnectionStatus::Connected);
+        automatic_poll(&mut app);
+        let first = take_native_requests(&mut rx);
+        assert_eq!(first.len(), 1);
+        let request = first[0].0;
+        for _ in 0..4 {
+            automatic_poll(&mut app);
+        }
+        assert!(
+            take_native_requests(&mut rx).is_empty(),
+            "automatic polls must coalesce while the original read is outstanding"
+        );
+        assert_eq!(app.native_cache[&Uuid::nil()].latest_request, request);
+        assert_eq!(app.tick_counter, 750);
+        let mut snapshot = documented_snapshot();
+        snapshot.request = request;
+        let generation = snapshot.generation;
+        app.handle_native_data(Uuid::nil(), request, NativeDiscovery::Snapshot(snapshot));
+        assert_eq!(
+            app.native_view.as_ref().unwrap().snapshot.generation,
+            generation
+        );
+        automatic_poll(&mut app);
+        let next = take_native_requests(&mut rx);
+        assert_eq!(next.len(), 1);
+        assert_ne!(next[0].0, request);
+    }
+
+    #[test]
+    fn mikrotik_rev_001_manual_supersession_and_stale_terminal_do_not_release_new_read() {
+        let (mut app, mut rx) = app();
+        app.router_status
+            .insert(Uuid::nil(), ConnectionStatus::Connected);
+        app.request_native_refresh(Uuid::nil());
+        let a = take_native_requests(&mut rx)[0].0;
+        app.request_refresh_selected();
+        let b = take_native_requests(&mut rx)[0].0;
+        assert_ne!(a, b);
+        let mut old = documented_snapshot();
+        old.request = a;
+        app.handle_native_data(Uuid::nil(), a, NativeDiscovery::Snapshot(old));
+        app.handle_native_error(Uuid::nil(), a, "old error".into());
+        automatic_poll(&mut app);
+        assert!(
+            take_native_requests(&mut rx).is_empty(),
+            "old A cannot clear the outstanding B"
+        );
+        assert!(app.current_summary.is_none());
+        assert_eq!(app.native_cache[&Uuid::nil()].latest_request, b);
+        let mut current = documented_snapshot();
+        current.request = b;
+        let generation = current.generation;
+        app.handle_native_data(Uuid::nil(), b, NativeDiscovery::Snapshot(current));
+        assert_eq!(
+            app.native_view.as_ref().unwrap().snapshot.generation,
+            generation
+        );
+        automatic_poll(&mut app);
+        let next = take_native_requests(&mut rx);
+        assert_eq!(next.len(), 1);
+        assert_ne!(next[0].0, b);
+    }
+
+    #[test]
+    fn mikrotik_rev_001_matching_invalid_terminal_releases_without_publishing() {
+        let (mut app, mut rx) = app();
+        app.router_status
+            .insert(Uuid::nil(), ConnectionStatus::Connected);
+        for instances in [false, true] {
+            app.request_native_refresh(Uuid::nil());
+            let request = take_native_requests(&mut rx)[0].0;
+            let discovery = if instances {
+                NativeDiscovery::Instances {
+                    router_id: Uuid::nil(),
+                    request,
+                    registration: documented_registration(),
+                    names: vec!["blue".into()],
+                }
+            } else {
+                let mut snapshot = documented_snapshot();
+                snapshot.request = request;
+                snapshot.instance = "wrong-scope".into();
+                NativeDiscovery::Snapshot(snapshot)
+            };
+            app.handle_native_data(Uuid::nil(), request, discovery);
+            assert!(app.current_summary.is_none());
+            automatic_poll(&mut app);
+            assert_eq!(
+                take_native_requests(&mut rx).len(),
+                1,
+                "a terminal payload rejected by correlation must not strand automatic retries"
+            );
+        }
+    }
+
+    #[test]
+    fn mikrotik_rev_001_discovery_config_invalidation_vendor_and_delete_reset_pending() {
+        let (mut app, mut rx) = app();
+        let id = Uuid::nil();
+        app.router_status.insert(id, ConnectionStatus::Connected);
+        app.request_native_refresh(id);
+        let old = take_native_requests(&mut rx)[0].0;
+        app.invalidate_native(id);
+        app.routers[0].mikrotik_instance = None;
+        app.all_routers[0].mikrotik_instance = None;
+        automatic_poll(&mut app);
+        let discovery_request = take_native_requests(&mut rx);
+        assert_eq!(discovery_request.len(), 1);
+        let request = discovery_request[0].0;
+        assert_eq!(discovery_request[0].1, None);
+        app.handle_native_data(
+            id,
+            request,
+            NativeDiscovery::Instances {
+                router_id: id,
+                request,
+                registration: documented_registration(),
+                names: vec!["blue".into()],
+            },
+        );
+        automatic_poll(&mut app);
+        let next = take_native_requests(&mut rx);
+        assert_eq!(
+            next.len(),
+            1,
+            "discovery terminal must release automatic polling"
+        );
+        app.invalidate_native(id);
+        for router in [&mut app.routers[0], &mut app.all_routers[0]] {
+            router.hostname = "replacement.invalid".into();
+            router.mikrotik_instance = Some("red".into());
+        }
+        automatic_poll(&mut app);
+        let replacement = take_native_requests(&mut rx);
+        assert_eq!(replacement.len(), 1);
+        assert_eq!(replacement[0].1.as_deref(), Some("red"));
+        app.handle_native_error(id, old, "old registration error".into());
+        app.handle_native_error(id, next[0].0, "old scope error".into());
+        automatic_poll(&mut app);
+        assert!(take_native_requests(&mut rx).is_empty());
+        app.invalidate_native(id);
+        app.routers[0].vendor = RouterVendor::Cisco;
+        app.all_routers[0].vendor = RouterVendor::Cisco;
+        automatic_poll(&mut app);
+        assert!(take_native_requests(&mut rx).is_empty());
+        app.routers[0].vendor = RouterVendor::MikroTik;
+        app.all_routers[0].vendor = RouterVendor::MikroTik;
+        automatic_poll(&mut app);
+        assert_eq!(take_native_requests(&mut rx).len(), 1);
+        app.invalidate_native(id);
+        app.routers.clear();
+        app.all_routers.clear();
+        automatic_poll(&mut app);
+        assert!(take_native_requests(&mut rx).is_empty());
+    }
+
+    #[test]
+    fn mikrotik_rev_001_unavailable_or_closed_channel_does_not_strand_automatic_dispatch() {
+        let (mut app, _) = app();
+        app.router_status
+            .insert(Uuid::nil(), ConnectionStatus::Connected);
+        app.fetch_tx = None;
+        app.request_native_refresh(Uuid::nil());
+        for closed in [false, true] {
+            if closed {
+                let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+                drop(rx);
+                app.set_fetch_tx(tx);
+                app.request_native_refresh(Uuid::nil());
+            }
+            let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+            app.set_fetch_tx(tx);
+            automatic_poll(&mut app);
+            let requests = take_native_requests(&mut rx);
+            assert_eq!(requests.len(), 1);
+            app.handle_native_error(Uuid::nil(), requests[0].0, "synthetic terminal".into());
+        }
+    }
+
+    #[test]
+    fn mikrotik_rev_001_failed_manual_send_preserves_dispatched_read_and_online_retry_coalesces() {
+        let (mut app, mut rx) = app();
+        let id = Uuid::nil();
+        app.request_native_refresh(id);
+        let request = take_native_requests(&mut rx)[0].0;
+        let working_tx = app.fetch_tx.clone().unwrap();
+        let (closed_tx, closed_rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(closed_rx);
+        app.set_fetch_tx(closed_tx);
+        app.request_native_refresh(id);
+        assert_eq!(
+            app.native_cache[&id].latest_request, request,
+            "failed manual dispatch must not supersede work that was actually sent"
+        );
+        app.set_fetch_tx(working_tx);
+        app.router_status.insert(id, ConnectionStatus::Disconnected);
+        app.handle_ping_result(id, Some(std::time::Duration::from_millis(1)));
+        assert!(
+            take_native_requests(&mut rx).is_empty(),
+            "came-online automatic retry must coalesce with the outstanding read"
+        );
+        app.handle_native_error(id, request, "matching terminal".into());
+        automatic_poll(&mut app);
+        assert_eq!(take_native_requests(&mut rx).len(), 1);
     }
 
     #[test]
@@ -1145,6 +1421,9 @@ mod tests {
             app.handle_native_data(id, previous, NativeDiscovery::Snapshot(stale));
             assert!(app.native_cache[&id].snapshot.is_none());
             previous = request;
+            // Each phase represents a completed worker request; explicit
+            // supersession while outstanding is covered separately.
+            app.handle_native_error(id, request, "synthetic terminal completion".into());
         }
         assert!(rx.try_recv().is_err());
     }

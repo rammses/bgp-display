@@ -116,7 +116,13 @@ impl App {
             .filter(|r| (r.vendor == crate::router::RouterVendor::MikroTik) == native)
             .map(|r| r.id)
             .collect();
-        self.request_refresh_ids(ids);
+        if native {
+            for id in ids {
+                self.request_native_refresh_automatic(id);
+            }
+        } else {
+            self.request_refresh_ids(ids);
+        }
     }
 
     pub fn request_refresh_ids(&mut self, ids: Vec<Uuid>) {
@@ -194,7 +200,7 @@ impl App {
                 .iter()
                 .any(|r| r.id == id && r.vendor == crate::router::RouterVendor::MikroTik)
             {
-                self.request_native_refresh(id);
+                self.request_native_refresh_automatic(id);
             } else {
                 self.send_fetch(FetchRequest::RefreshRouter(id));
             }

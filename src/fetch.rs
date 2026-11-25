@@ -57,20 +57,20 @@ async fn handle_request(
             request,
             instance,
         } => {
-            let Ok((config, registration)) = ssh.registered_snapshot(router_id).await else {
-                let _ = tx.send(AppEvent::NativeError(
-                    router_id,
-                    request,
-                    "native registration unavailable".into(),
-                ));
-                return;
+            let (config, registration) = match ssh.registered_snapshot(router_id).await {
+                Ok(snapshot) => snapshot,
+                Err(error) => {
+                    publish_native_refresh_result(&tx, router_id, request, Err(error));
+                    return;
+                }
             };
             if config.vendor != RouterVendor::MikroTik {
-                let _ = tx.send(AppEvent::NativeError(
+                publish_native_refresh_result(
+                    &tx,
                     router_id,
                     request,
-                    "native vendor changed".into(),
-                ));
+                    Err(anyhow::anyhow!("native vendor changed")),
+                );
                 return;
             }
             let backend = crate::router::mikrotik::MikroTikBackend::new_registered(
@@ -78,23 +78,8 @@ async fn handle_request(
                 registration,
                 Arc::clone(&ssh),
             );
-            match backend.discover(request, instance.as_deref()).await {
-                Ok(discovery) => {
-                    let _ = tx.send(AppEvent::NativeData(
-                        router_id,
-                        request,
-                        Box::new(discovery),
-                    ));
-                }
-                Err(_) => {
-                    // Do not expose arbitrary device text, inventory or credentials.
-                    let _ = tx.send(AppEvent::NativeError(
-                        router_id,
-                        request,
-                        "native read unavailable (version, scope, capability or transport)".into(),
-                    ));
-                }
-            }
+            let result = backend.discover(request, instance.as_deref()).await;
+            publish_native_refresh_result(&tx, router_id, request, result);
         }
         FetchRequest::FetchNativeRoutes { request, source } => {
             let result = native_peer_routes(&ssh, &request, &source).await;
@@ -157,6 +142,119 @@ async fn handle_request(
                     let _ = tx.send(AppEvent::PingResult(id, rtt));
                 });
             }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum NativeReadFailure {
+    UnsupportedVersion,
+    InstanceSelection,
+    ScopeUnusable,
+    Capability,
+    Transport,
+    RegistrationChanged,
+    Unclassified,
+}
+
+impl NativeReadFailure {
+    fn from_code(code: &str) -> Self {
+        match code {
+            "stale-native-registration" => Self::RegistrationChanged,
+            "spawn" | "process" | "stdout-pipe" | "stderr-pipe" | "stdout-read" | "stderr"
+            | "exit-status" | "wait" | "timeout" | "output-budget" => Self::Transport,
+            "invalid-envelope" | "request-mismatch" | "command-rejected" | "decode-worker" => {
+                Self::Capability
+            }
+            _ => Self::Unclassified,
+        }
+    }
+
+    fn classify(error: &anyhow::Error) -> Self {
+        if let Some(error) = error.downcast_ref::<crate::ssh::NativeExecError>() {
+            return Self::from_code(error.code);
+        }
+        if let Some(error) = error.downcast_ref::<crate::router::mikrotik::NativeWireError>() {
+            return Self::from_code(error.code);
+        }
+        // The completed reader uses literal client error/context messages.
+        // Downcast them, never Display/Debug arbitrary error chains or compare
+        // substring matches against potentially credential-bearing device text.
+        match error.downcast_ref::<&'static str>().copied() {
+            Some("unsupported RouterOS version; requires 7.24.7" | "native inventory is unsupported") => Self::UnsupportedVersion,
+            Some("an existing BGP instance must be explicitly selected"
+                | "selected native instance is unavailable; explicitly select an existing main instance"
+                | "selected native instance is unavailable") => Self::InstanceSelection,
+            Some("selected native instance is not effective main"
+                | "selected native instance is unusable or state is unknown"
+                | "selected native instance is unusable"
+                | "native instance state is unreadable"
+                | "selected instance VRF is not main"
+                | "selected instance routing table is not main"
+                | "cannot guard selected native instance") => Self::ScopeUnusable,
+            Some("native installed version is unavailable"
+                | "cannot decode native inventory"
+                | "cannot decode native reference inventory"
+                | "invalid native record collection"
+                | "unexpected sensitive native property"
+                | "missing or invalid native identity/scope field"
+                | "invalid or missing required native configuration field") => Self::Capability,
+            Some("stale-native-registration" | "native vendor changed"
+                | "native backend configuration changed" | "native registration decision mismatch"
+                | "native selected scope changed" | "cannot resolve native registration"
+                | "cannot acquire native read lease") => Self::RegistrationChanged,
+            _ => Self::Unclassified,
+        }
+    }
+
+    fn category(self) -> &'static str {
+        match self {
+            Self::UnsupportedVersion => "unsupported-version",
+            Self::InstanceSelection => "instance-selection",
+            Self::ScopeUnusable => "scope-unusable",
+            Self::Capability => "capability",
+            Self::Transport => "transport",
+            Self::RegistrationChanged => "registration-changed",
+            Self::Unclassified => "unclassified",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            Self::UnsupportedVersion => "[unsupported-version] Unsupported RouterOS version; use RouterOS 7.24.7 before refreshing.",
+            Self::InstanceSelection => "[instance-selection] Selected BGP Instance is missing or renamed; choose an existing main-table instance in router settings.",
+            Self::ScopeUnusable => "[scope-unusable] Selected BGP Instance is non-main, disabled, inactive or unreadable; select an observable, usable main-table instance.",
+            Self::Capability => "[capability] Native JSON/inventory read is unavailable or invalid; check read permissions and RouterOS 7.24.7 compatibility.",
+            Self::Transport => "[transport] Native SSH read failed or exceeded client limits; check connectivity, authentication and device load, then retry.",
+            Self::RegistrationChanged => "[registration-changed] Router registration or selection changed; check the current router entry and refresh again.",
+            Self::Unclassified => "[unclassified] Native read failed; check the router entry and read permissions, then refresh again.",
+        }
+    }
+}
+
+fn publish_native_refresh_result(
+    tx: &mpsc::UnboundedSender<AppEvent>,
+    router_id: Uuid,
+    request: Uuid,
+    result: anyhow::Result<crate::router::mikrotik::NativeDiscovery>,
+) {
+    match result {
+        Ok(discovery) => {
+            let _ = tx.send(AppEvent::NativeData(
+                router_id,
+                request,
+                Box::new(discovery),
+            ));
+        }
+        Err(error) => {
+            let failure = NativeReadFailure::classify(&error);
+            tracing::warn!(router_id = %router_id, request = %request,
+                category = %failure.category(), "native refresh failed");
+            let _ = tx.send(AppEvent::NativeError(
+                router_id,
+                request,
+                failure.message().into(),
+            ));
         }
     }
 }
@@ -689,6 +787,230 @@ mod native_tests {
             mikrotik_instance: Some("blue".into()),
             ..RouterConfig::default()
         }
+    }
+
+    fn native_error_event(
+        result: anyhow::Result<crate::router::mikrotik::NativeDiscovery>,
+    ) -> String {
+        let request = Uuid::new_v4();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        publish_native_refresh_result(&tx, Uuid::nil(), request, result);
+        let AppEvent::NativeError(router_id, event_request, message) = rx.try_recv().unwrap()
+        else {
+            panic!("native service error event required")
+        };
+        assert_eq!(router_id, Uuid::nil());
+        assert_eq!(event_request, request);
+        assert!(rx.try_recv().is_err());
+        message
+    }
+
+    #[tokio::test]
+    async fn mikrotik_rev_002_service_reader_errors_keep_actionable_version_instance_and_scope_categories(
+    ) {
+        use crate::router::mikrotik::{fetch_native, test_support::*};
+        use serde_json::json;
+        let registration = documented_registration();
+        let io = TranscriptExecutor::new(vec![Reply::Data(json!("7.24.6 (stable)"))]);
+        let result = fetch_native(&io, &registration, Uuid::new_v4(), Some("blue")).await;
+        let message = native_error_event(result);
+        assert!(
+            message.starts_with("[unsupported-version]"),
+            "version failure category was lost"
+        );
+        assert!(message.contains("7.24.7"));
+        assert_eq!(io.seen_labels().len(), 1);
+        for renamed in [false, true] {
+            let mut inventory = documented_inventory();
+            if renamed {
+                inventory.instances[0]
+                    .props
+                    .insert("name".into(), json!("renamed-blue"));
+            } else {
+                inventory.instances.clear();
+            }
+            let io = TranscriptExecutor::new(vec![
+                Reply::Data(json!("7.24.7")),
+                Reply::Data(serde_json::to_value(inventory.instances).unwrap()),
+            ]);
+            let result = fetch_native(&io, &registration, Uuid::new_v4(), Some("blue")).await;
+            let message = native_error_event(result);
+            assert!(
+                message.starts_with("[instance-selection]"),
+                "missing/renamed selection category was lost"
+            );
+            assert!(message.contains("router settings"));
+            assert_eq!(io.seen_labels().len(), 2);
+        }
+        for (property, value) in [
+            ("routing-table", json!("not-main")),
+            ("disabled", json!(true)),
+            ("inactive", json!("unknown-state")),
+        ] {
+            let mut inventory = documented_inventory();
+            inventory.instances[0].props.insert(property.into(), value);
+            let io = TranscriptExecutor::new(vec![
+                Reply::Data(json!("7.24.7")),
+                Reply::Data(serde_json::to_value(inventory.instances).unwrap()),
+            ]);
+            let result = fetch_native(&io, &registration, Uuid::new_v4(), Some("blue")).await;
+            let message = native_error_event(result);
+            assert!(
+                message.starts_with("[scope-unusable]"),
+                "non-main/unusable scope category was lost"
+            );
+            assert!(message.contains("main-table"));
+            assert_eq!(io.mutation_attempts(), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn mikrotik_rev_002_service_reader_separates_known_transport_and_capability_failures() {
+        use crate::router::mikrotik::{fetch_native, test_support::*};
+        use serde_json::json;
+        for (code, category) in [
+            ("timeout", "[transport]"),
+            ("spawn", "[transport]"),
+            ("command-rejected", "[capability]"),
+            ("invalid-envelope", "[capability]"),
+        ] {
+            let io = TranscriptExecutor::new(vec![Reply::Failure {
+                code,
+                started: true,
+            }]);
+            let message = native_error_event(
+                fetch_native(
+                    &io,
+                    &documented_registration(),
+                    Uuid::new_v4(),
+                    Some("blue"),
+                )
+                .await,
+            );
+            assert!(
+                message.starts_with(category),
+                "recognized native execution failure was not classified"
+            );
+            assert_eq!(io.mutation_attempts(), 0);
+        }
+        let io = TranscriptExecutor::new(vec![
+            Reply::Data(json!("7.24.7")),
+            Reply::Data(json!("synthetic-device-credential")),
+        ]);
+        let message = native_error_event(
+            fetch_native(
+                &io,
+                &documented_registration(),
+                Uuid::new_v4(),
+                Some("blue"),
+            )
+            .await,
+        );
+        assert!(message.starts_with("[capability]"));
+        assert!(!message.contains("synthetic-device-credential"));
+    }
+
+    #[derive(Clone)]
+    struct NativeLogWriter(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for NativeLogWriter {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug)]
+    struct UntrustedNativeError(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl std::fmt::Display for UntrustedNativeError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            f.write_str("synthetic-password-never-format")
+        }
+    }
+    impl std::error::Error for UntrustedNativeError {}
+
+    #[test]
+    fn mikrotik_rev_002_service_unknown_errors_are_redacted_without_formatting_or_payload_logging()
+    {
+        let bytes = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let writer = NativeLogWriter(Arc::clone(&bytes));
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_max_level(tracing::Level::TRACE)
+            .with_writer(move || writer.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let formatted = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        for error in [
+            anyhow::Error::new(UntrustedNativeError(Arc::clone(&formatted)))
+                .context("synthetic-credential-context"),
+            anyhow::anyhow!(
+                "device says unsupported RouterOS version; requires 7.24.7 synthetic-credential"
+            ),
+            anyhow::Error::new(crate::ssh::NativeExecError {
+                code: "timeout synthetic-credential",
+                started: true,
+            }),
+        ] {
+            let message = native_error_event(Err(error));
+            assert!(message.starts_with("[unclassified]"));
+            assert!(!message.contains("synthetic-credential"));
+            assert!(!message.contains("synthetic-password"));
+        }
+        assert_eq!(
+            formatted.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "unknown error chains must never be formatted even for classification"
+        );
+        let output = String::from_utf8(bytes.lock().unwrap().clone()).unwrap();
+        assert!(
+            output.contains("unclassified"),
+            "safe diagnostic category must be retained"
+        );
+        assert!(!output.contains("synthetic-credential"));
+        assert!(!output.contains("synthetic-password"));
+    }
+
+    #[tokio::test]
+    async fn mikrotik_rev_002_service_success_and_stale_registration_keep_typed_event_path() {
+        use crate::router::mikrotik::{fetch_native, test_support::*, NativeDiscovery};
+        let request = Uuid::new_v4();
+        let io = TranscriptExecutor::new(vec![
+            Reply::Data(serde_json::json!("7.24.7")),
+            Reply::Data(serde_json::to_value(documented_inventory().instances).unwrap()),
+        ]);
+        let result = fetch_native(&io, &documented_registration(), request, None).await;
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        publish_native_refresh_result(&tx, Uuid::nil(), request, result);
+        let AppEvent::NativeData(id, event_request, discovery) = rx.try_recv().unwrap() else {
+            panic!("typed discovery success")
+        };
+        assert_eq!(id, Uuid::nil());
+        assert_eq!(event_request, request);
+        assert!(
+            matches!(*discovery, NativeDiscovery::Instances { names, .. } if names == vec!["blue"])
+        );
+        let ssh = SshSessionManager::new(&[]);
+        handle_request(
+            ssh,
+            tx,
+            FetchRequest::RefreshMikroTik {
+                router_id: Uuid::nil(),
+                request,
+                instance: Some("blue".into()),
+            },
+        )
+        .await;
+        assert!(
+            matches!(rx.try_recv().unwrap(), AppEvent::NativeError(_, event_request, message)
+            if event_request == request && message.starts_with("[registration-changed]"))
+        );
     }
 
     #[tokio::test]
