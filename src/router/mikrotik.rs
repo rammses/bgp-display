@@ -8,6 +8,8 @@ mod read;
 mod scope;
 
 #[cfg(test)]
+mod acceptance_tests;
+#[cfg(test)]
 pub(crate) mod test_support;
 
 pub use crate::router::commands::mikrotik::preview_native;

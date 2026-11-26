@@ -9,17 +9,17 @@
 ## Features
 
 - Live BGP peer state for every router on a single screen
-- Neighbor wizard — create, edit, delete BGP neighbors with vendor-specific CLI generation
-- Route-map, prefix-list, and community-list editors
-- Full BGP RIB navigation without leaving the TUI
-- Config history with rollback support
+- Neighbor management — vendor-specific wizard or guarded native MikroTik workflow
+- Route-map, prefix-list, and community-list editors; native ordered RouterOS filter-rule editor
+- BGP RIB navigation without leaving the TUI (native availability/scope limits below)
+- Config history with legacy rollback support; MikroTik receipts are non-replayable
 - Peer state alerting and transition timeline
 - Ping monitor with RTT, packet loss, and sparkline
 - Per-tab search/filter across all views
 - Encrypted credential storage (AES-256-GCM, Argon2id key derivation)
 - SSH via system OpenSSH with ControlMaster multiplexing
 
-**Supported routers:** Cisco IOS / IOS-XE · VyOS 1.5 (FRRouting) · Cumulus Linux 5.x · Citrix VPX · pfSense · FortiGate (with VDOM) · A10 Networks ADC
+**Supported routers:** Cisco IOS / IOS-XE · VyOS 1.5 (FRRouting) · Cumulus Linux 5.x · Citrix VPX · pfSense · FortiGate (with VDOM) · A10 Networks ADC · MikroTik RouterOS **7.24.7** (automated-tested; device validation pending)
 
 ---
 
@@ -87,9 +87,9 @@ After unlocking, press **`6`** to open the **Routers** tab and add your first ro
 | # | Tab | Purpose |
 |---|-----|---------|
 | 1 | Dashboard | Router list + BGP summary + peer state sparkline |
-| 2 | Peers | Neighbor table, per-peer routes, MTU probe |
-| 3 | Routes | Full BGP RIB |
-| 4 | Config | Live config, route-map detail, policy editors |
+| 2 | Peers | Neighbor table, per-peer routes, MTU probe where supported |
+| 3 | Routes | BGP RIB; selected effective-main stored routes for MikroTik |
+| 4 | Config | Live config/policy editors; native connection/chain metadata for MikroTik |
 | 5 | BGP Log | Application event log |
 | 6 | Routers | Add / edit / delete routers |
 | 7 | SSH Log | Connectivity events + ping monitor |
@@ -107,8 +107,27 @@ After unlocking, press **`6`** to open the **Routers** tab and add your first ro
 | pfSense | Piped stdin | Full |
 | FortiGate | Piped stdin + VDOM | Full |
 | A10 Networks ADC | Direct shell + piped config | Full |
+| MikroTik RouterOS 7.24.7 | Strict native single-line RouterOS exec over system OpenSSH | Implemented and automated-tested; **device validation pending**; bounded scope below |
 
 For Cumulus BGP unnumbered, enter the interface name (for example `swp51` or `peerlink.4094`) in the neighbor field. New neighbors start with deny-all inbound and outbound route maps; edit the policies to allow intended prefixes. Cumulus configuration uses the default VRF. BFD and the wizard's direct local-preference field are unavailable for Cumulus; set local preference in a route map.
+
+### MikroTik native workflow and validation status
+
+```text
+MikroTik RouterOS 7.24.7: implemented and automated-tested,
+pending RouterOS 7.24.7 device validation.
+Scope: selected main-table instance, fixed-host neighbor management,
+native filter-rule editing; no automatic transactional rollback.
+```
+
+- **Exact release only:** accepts `7.24.7`, including installed channel labels such as `7.24.7 (long-term)`; other versions are unsupported, not inferred compatible from `7.x`. Automated evidence uses synthetic documentation-derived transcripts and real App/UI/DB paths, **not device captures or production-readiness proof**.
+- **Select an existing instance:** in Routers choose `MikroTik` and set **BGP Instance** (`mikrotik_instance` in JSON import/export). Blank is discovery-only: inspect actual main-table candidates, then enter an explicit name. No instance is auto-created/selected. Each connection's direct **and inherited** routing table/VRF must independently resolve to `main`; non-main, ambiguous or unreadable scope is read-only, even under a main-table instance.
+- **Neighbor lifecycle:** `n` creates a fixed IPv4/IPv6 host with explicit remote ASN, supported role (`ebgp`, `ibgp`, `ibgp-rr`) and independent IPv4/IPv6 unicast AFI. Creation verifies two enabled `reject;` chains, then a **disabled** connection with both bindings. Inspect/edit policy before **separately reviewing and confirming enable** with `s`. `e` patches changed native fields only; `x` deletes the exact connection and **preserves templates, chains and lists**. MD5 is explicit **Keep / Replace / Clear**, never inferred from a hidden/omitted value; Replace/Clear require trustworthy private on-device proof or remain indeterminate.
+- **Native Config/filter editor:** select a metadata-backed connection/chain row and press `e`, not a Cisco route-map editor. Raw multiline rule text is a quoted native property, not general CLI. `Ctrl-S` saves a field **locally**, Enter inserts a newline there; return to the ordered list for Review, distinct shared-chain acknowledgment and second-Enter confirmation. Live updates are **not atomic** and shared consumers may be affected. Cross-scope/unknown direct consumers fail closed; nested/other-protocol references are not a complete dependency audit.
+- **Honest limits:** unknown counters/fields remain `N/A` (or labeled partial totals); original AS-path text/native flags are retained. Received routes are associated **stored** session routes, not full pre-policy Adj-RIB-In. Advertisements are currently unavailable: no retention, dump, PCAP, MTU or hidden probe mutations. No generic CLI/clone, template/list editing, connection identity/scope changes, Cisco max-prefix/soft-reconfiguration translation, or connection-form weight/local-pref controls.
+- **Budgets and outcomes:** application limits are **30 seconds / 64 MiB per native read command** and **32 KiB per generated payload**, preflighted before any write and rechecked when materialized. No silent truncation; last-good cache stays marked stale on failed reads. Sequential guarded steps stop on error; no automatic mutation retry, replay, legacy fallback, cleanup or rollback. `VerifiedApplied` requires structured results and independent post-reads, not merely SSH exit status; partial/indeterminate outcomes need inspection and a fresh preview. The local endpoint lock and observable guard cannot exclude another administrator's race.
+
+MikroTik's [versioned 7.24 BGP guide](https://manual.mikrotik.com/docs/7.24/user-guides/routing-and-networking-protocols/unicast/bgp/understanding-bgp) excludes **SMIPS** devices (hAP lite, hAP lite TC, hAP mini). Other target models/architectures, actual wire types/keys, permission/sensitive visibility, error envelopes, inheritance/session joins, session resets/filter traffic effects and Internet-scale RIB performance **remain unvalidated**. There is no Safe Mode/transactional atomicity claim. See [the native operator workflow and entirely pending lab checklist](HELP.md#mikrotik-routeros-7247-native-workflow) before attempting authorized lab writes.
 
 ---
 
@@ -124,7 +143,7 @@ Logs are written to a daily-rotating file (never to the terminal):
 Control verbosity with `BGP_LM_LOG`:
 
 ```bash
-BGP_LM_LOG=debug bgp-link-manager   # SSH commands, fetch requests
+BGP_LM_LOG=debug bgp-link-manager   # legacy SSH commands; native safe labels only
 BGP_LM_LOG=trace bgp-link-manager   # per-frame draw timing
 ```
 
@@ -155,6 +174,7 @@ src/
 │   ├── pfsense.rs       pfSense
 │   ├── fortigate.rs     FortiGate (VDOM)
 │   ├── a10.rs           A10 Networks ADC (ACOS)
+│   ├── mikrotik.rs      Native RouterOS 7.24.7 (domain/read/apply/filter modules)
 │   └── commands/        Vendor-specific CLI generation
 └── ui/
     ├── mod.rs            Layout, colour palette, overlays

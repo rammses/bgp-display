@@ -46,7 +46,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 Style::default().fg(C_HEADER),
             ));
             lines.push(Line::from("Edit: untouched fields Keep. ~ explicitly unsets supported optional override; inherited result is reviewed."));
-            lines.push(Line::from("Identity/scope immutable on edit. Creation: disabled + both enabled reject chains. Filter editing read-only."));
+            lines.push(Line::from("Identity/scope fixed; create disabled + deny-all. Bindings here; Config chain row/e: ordered filter editor."));
             let mut fields = Vec::new();
             let mut selected_value = String::new();
             for (index, label) in NATIVE_FIELDS.iter().enumerate() {
