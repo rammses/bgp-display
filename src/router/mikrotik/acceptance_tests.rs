@@ -257,8 +257,45 @@ async fn mikrotik_acceptance_monitor_create_edit_filter_disable_delete() {
         .all(|p| p.prefixes_advertised.is_none()));
     app.current_tab = ActiveTab::Peers;
     app.peer_table_state.select(Some(0));
-    let rendered = screen(&mut app);
-    assert!(rendered.contains("Pfx/Tx") && rendered.contains("N/A"));
+    assert_eq!(
+        app.current_peers[0].identity(),
+        crate::bgp::PeerKey::RouterOsConnection {
+            instance: "blue".into(),
+            name: "peer-a".into(),
+        }
+    );
+    let mut terminal = Terminal::new(TestBackend::new(220, 50)).unwrap();
+    terminal
+        .draw(|frame| crate::ui::draw(frame, &mut app))
+        .unwrap();
+    let rows = terminal
+        .backend()
+        .buffer()
+        .content
+        .chunks(220)
+        .map(|row| row.iter().map(|cell| cell.symbol()).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    let header = rows
+        .iter()
+        .find(|row| row.concat().contains("Pfx/Tx"))
+        .unwrap();
+    let tx_column = header
+        .windows(6)
+        .position(|cells| cells.concat() == "Pfx/Tx")
+        .unwrap();
+    let peer = rows
+        .iter()
+        .find(|row| row.concat().contains("192.0.2.2"))
+        .unwrap();
+    assert!(
+        peer.concat().contains("▶ 192.0.2.2"),
+        "assert the selected peer's table row, not a detail label"
+    );
+    assert_eq!(
+        peer[tx_column..tx_column + 7].concat(),
+        "N/A    ",
+        "peer-a Pfx/Tx must be unavailable, not invented zero"
+    );
 
     key(&mut app, KeyCode::Char('n'));
     let e = app.native_editor.as_mut().unwrap();

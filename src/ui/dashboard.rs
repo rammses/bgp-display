@@ -128,7 +128,10 @@ fn draw_summary_info(f: &mut Frame, app: &App, area: Rect) {
                 "  Selected-main observed peers only; unknown/unscoped audit rows excluded",
             ));
             lines.push(Line::from(
-                "  Guarded neighbor management available; filter editing / advertisements / MTU unavailable",
+                "  Native neighbors + Config chain ordered filter editing available",
+            ));
+            lines.push(Line::from(
+                "  Generic policy/list editing unsupported; advertisements / MTU unavailable",
             ));
             if let Some(reason) = app
                 .native_cache
@@ -241,4 +244,41 @@ fn draw_peer_sparkline(f: &mut Frame, app: &App, area: Rect) {
             )),
     );
     f.render_widget(para, area);
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::app::{filter_test_app, filter_test_key, ActiveTab};
+    use crossterm::event::KeyCode;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn mikrotik_final_005_dashboard_distinguishes_native_filters_from_generic_policies() {
+        let (mut app, mut rx) = filter_test_app(None);
+        filter_test_key(&mut app, KeyCode::Esc);
+        app.current_tab = ActiveTab::Dashboard;
+        let mut terminal = Terminal::new(TestBackend::new(180, 45)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(180)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        assert!(
+            rows.iter().any(|row| row
+                .contains("Native neighbors + Config chain ordered filter editing available")),
+            "Dashboard must advertise delivered native editing: {rows:?}"
+        );
+        assert!(rows.iter().any(|row| row.contains(
+            "Generic policy/list editing unsupported; advertisements / MTU unavailable"
+        )));
+        assert!(!rows
+            .iter()
+            .any(|row| row.contains("filter editing / advertisements / MTU unavailable")));
+        assert!(rx.try_recv().is_err(), "Dashboard remains cache-only");
+    }
 }

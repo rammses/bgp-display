@@ -642,6 +642,106 @@ mod tests {
     }
 
     #[test]
+    fn mikrotik_final_003_guard_redacts_dotted_nested_array_secrets_not_unknown_neighbors() {
+        // Removing recursion, dotted-suffix classification, or retaining whole
+        // unknown containers instead of only their secret leaves breaks this matrix.
+        for collection in ["instances", "connections", "templates", "rules"] {
+            for shape in ["dotted", "nested-object", "array-contained"] {
+                for secret in [
+                    "tcp-md5-key",
+                    "password",
+                    "passphrase",
+                    "private-key",
+                    "secret",
+                    "authentication-key",
+                ] {
+                    let fixture = |sentinel: &str, neighbor: &str| match shape {
+                        "dotted" => {
+                            json!({(format!("auth.{secret}")): sentinel, "auth.future-key": neighbor})
+                        }
+                        "nested-object" => {
+                            json!({"vendor.future": {"auth": {(secret): sentinel, "future-key": neighbor}}})
+                        }
+                        _ => {
+                            json!({"vendor.future": [null, {"auth": {(format!("group.{secret}")): sentinel, "future-key": neighbor}}, [false, {(secret): sentinel, "future-key": neighbor}]]})
+                        }
+                    };
+                    let mut inv = inventory();
+                    inv.templates
+                        .push(record(json!({".id":"*T", "name":"parent", "vrf":"main"})));
+                    let put = |inv: &mut NativeInventory, value: Value| {
+                        let records = match collection {
+                            "instances" => &mut inv.instances,
+                            "connections" => &mut inv.connections,
+                            "templates" => &mut inv.templates,
+                            _ => &mut inv.rules,
+                        };
+                        records[0].props.extend(
+                            value
+                                .as_object()
+                                .unwrap()
+                                .iter()
+                                .map(|(k, v)| (k.clone(), v.clone())),
+                        );
+                    };
+                    put(&mut inv, fixture("FINAL003_SECRET_A", "001 α"));
+                    let original = inv.clone();
+                    let baseline = config_guard(&inv, "blue").unwrap();
+                    assert_eq!(
+                        inv, original,
+                        "guard must not mutate original {collection}/{shape}/{secret}"
+                    );
+                    let mut secret_only = inv.clone();
+                    put(&mut secret_only, fixture("FINAL003_SECRET_B", "001 α"));
+                    let original_secret_only = secret_only.clone();
+                    let changed_guard = config_guard(&secret_only, "blue").unwrap();
+                    assert_eq!(
+                        baseline, changed_guard,
+                        "secret-only mutation must not affect {collection}/{shape}/{secret}"
+                    );
+                    for guard in [&baseline, &changed_guard] {
+                        let serialized = serde_json::to_string(&guard.0).unwrap();
+                        assert!(
+                            !serialized.contains("FINAL003_SECRET_A")
+                                && !serialized.contains("FINAL003_SECRET_B"),
+                            "secret in {collection}/{shape}/{secret} guard"
+                        );
+                        assert!(
+                            serialized.contains("001 α"),
+                            "unknown nonsecret neighbor must survive"
+                        );
+                    }
+                    assert_eq!(secret_only, original_secret_only);
+                    let records = match collection {
+                        "instances" => &secret_only.instances,
+                        "connections" => &secret_only.connections,
+                        "templates" => &secret_only.templates,
+                        _ => &secret_only.rules,
+                    };
+                    assert!(
+                        serde_json::to_string(&records[0])
+                            .unwrap()
+                            .contains("FINAL003_SECRET_B"),
+                        "original raw record must retain sentinel"
+                    );
+                    let mut nonsecret_neighbor = secret_only.clone();
+                    put(
+                        &mut nonsecret_neighbor,
+                        fixture("FINAL003_SECRET_B", "002 β"),
+                    );
+                    assert_ne!(
+                        baseline,
+                        config_guard(&nonsecret_neighbor, "blue").unwrap(),
+                        "nonsecret unknown mutation must affect {collection}/{shape}/{secret}"
+                    );
+                    assert_eq!(inv, original);
+                    assert_eq!(secret_only, original_secret_only);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn mikrotik_scope_guard_includes_configuration_order_ids_bindings_and_references() {
         let mut inv = inventory();
         inv.templates.push(record(

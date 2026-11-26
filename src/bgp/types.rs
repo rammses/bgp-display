@@ -12,6 +12,8 @@ pub enum BgpState {
     OpenSent,
     OpenConfirm,
     Established,
+    /// Explicitly observed as not established, without claiming a specific FSM state.
+    NotEstablished,
     Unknown(String),
 }
 
@@ -37,6 +39,7 @@ impl BgpState {
             BgpState::OpenSent => "OpenSent",
             BgpState::OpenConfirm => "OpenConfirm",
             BgpState::Established => "Established",
+            BgpState::NotEstablished => "Not established",
             BgpState::Unknown(s) => s.as_str(),
         }
     }
@@ -276,6 +279,38 @@ impl BgpSummary {
 #[cfg(test)]
 mod optional_tests {
     use super::*;
+
+    #[test]
+    fn mikrotik_final_001_observed_state_serde_preserves_legacy_states_and_producers() {
+        let observed: BgpState = serde_json::from_str("\"NotEstablished\"").unwrap();
+        assert_eq!(observed.as_str(), "Not established");
+        assert!(!observed.is_established());
+        assert_eq!(
+            serde_json::to_string(&observed).unwrap(),
+            "\"NotEstablished\""
+        );
+        for (state, encoded) in [
+            (BgpState::Idle, "\"Idle\""),
+            (BgpState::Connect, "\"Connect\""),
+            (BgpState::Active, "\"Active\""),
+            (BgpState::OpenSent, "\"OpenSent\""),
+            (BgpState::OpenConfirm, "\"OpenConfirm\""),
+            (BgpState::Established, "\"Established\""),
+            (
+                BgpState::Unknown("not established (native)".into()),
+                "{\"Unknown\":\"not established (native)\"}",
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&state).unwrap(), encoded);
+            assert_eq!(serde_json::from_str::<BgpState>(encoded).unwrap(), state);
+        }
+        // Only typed native observations produce the new state, not label parsing.
+        assert_eq!(
+            BgpState::from_str("not established"),
+            BgpState::Unknown("not established".into())
+        );
+        assert_eq!(BgpState::from_str("Active"), BgpState::Active);
+    }
 
     #[test]
     fn mikrotik_unknowns_checked_totals_identity_and_legacy_serde() {

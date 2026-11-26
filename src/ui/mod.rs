@@ -537,6 +537,7 @@ pub fn state_style(state: &crate::bgp::BgpState) -> Style {
         BgpState::OpenSent => Style::default().fg(C_WARN),
         BgpState::OpenConfirm => Style::default().fg(C_WARN),
         BgpState::Idle => Style::default().fg(C_ERROR),
+        BgpState::NotEstablished => Style::default().fg(C_ERROR),
         BgpState::Unknown(_) => Style::default().fg(C_DIM),
     }
 }
@@ -565,6 +566,20 @@ mod native_tests {
     use crate::router::mikrotik::{test_support::documented_snapshot, NativeDiscovery};
     use crate::router::{RouterConfig, RouterVendor};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn mikrotik_final_001_known_negative_style_is_not_unknown_or_established() {
+        let observed = serde_json::from_str::<crate::bgp::BgpState>("\"NotEstablished\"").unwrap();
+        assert_eq!(state_style(&observed).fg, Some(C_ERROR));
+        assert_eq!(
+            state_style(&crate::bgp::BgpState::Unknown("unobserved".into())).fg,
+            Some(C_DIM)
+        );
+        assert_eq!(
+            state_style(&crate::bgp::BgpState::Established).fg,
+            Some(C_ESTABLISHED)
+        );
+    }
 
     fn native_app() -> App {
         let config = RouterConfig {

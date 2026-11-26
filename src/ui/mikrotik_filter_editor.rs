@@ -13,8 +13,8 @@ use ratatui::{
     Frame,
 };
 
-pub fn draw(frame: &mut Frame, app: &App) {
-    let Some(e) = &app.native_filter_editor else {
+pub fn draw(frame: &mut Frame, app: &mut App) {
+    let Some(e) = app.native_filter_editor.as_mut() else {
         return;
     };
     let full = frame.area();
@@ -112,6 +112,24 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 height: chunks[1].height.saturating_sub(label_area.height),
                 ..chunks[1]
             };
+            let cursor_line = u16::try_from(
+                raw[..e.cursor.min(raw.len())]
+                    .bytes()
+                    .filter(|b| *b == b'\n')
+                    .count(),
+            )
+            .unwrap_or(u16::MAX);
+            let viewport = (raw_area.width, raw_area.height);
+            if raw_area.height > 0 && (e.raw_follow_cursor || e.raw_viewport != Some(viewport)) {
+                if cursor_line < e.scroll {
+                    e.scroll = cursor_line;
+                } else if cursor_line >= e.scroll.saturating_add(raw_area.height) {
+                    e.scroll = cursor_line.saturating_sub(raw_area.height - 1);
+                }
+            }
+            // Only viewport metadata changes during rendering; original/raw
+            // source bytes and the UTF-8 cursor remain untouched.
+            e.raw_viewport = Some(viewport);
             let mut marked = raw.clone();
             marked.insert(e.cursor.min(marked.len()), '▏');
             // Unwrapped raw viewport: a long earlier prefix cannot push the
@@ -122,7 +140,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 .next()
                 .unwrap_or("");
             let column = Line::from(presentation_text(prefix)).width();
-            let horizontal = column.saturating_sub(usize::from(raw_area.width).saturating_sub(2));
+            let horizontal = if cursor_line >= e.scroll
+                && cursor_line < e.scroll.saturating_add(raw_area.height)
+            {
+                column.saturating_sub(usize::from(raw_area.width).saturating_sub(2))
+            } else {
+                // Manual vertical scrolling must not hide shorter earlier lines
+                // behind the offscreen cursor's horizontal offset.
+                0
+            };
             let lines = marked
                 .split('\n')
                 .map(|line| Line::from(presentation_text(line)))
@@ -296,6 +322,180 @@ mod tests {
             .map(|y| (0..width).map(|x| b[(x, y)].symbol()).collect::<String>())
             .collect()
     }
+
+    fn multiline_sources() -> [(String, &'static str, &'static str); 2] {
+        [
+            (
+                "one α\ntwo 界\nthree e\u{301}\nfour λ".into(),
+                "four λ",
+                "three e\u{301}",
+            ),
+            (
+                (1..30)
+                    .map(|n| format!("line{n:02} α"))
+                    .chain(std::iter::once("界".repeat(50) + "tail α"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                "tail α",
+                "line29 α",
+            ),
+        ]
+    }
+
+    fn multiline_app(
+        source: &str,
+        field: KeyCode,
+    ) -> (
+        crate::app::App,
+        tokio::sync::mpsc::UnboundedReceiver<crate::events::FetchRequest>,
+    ) {
+        let mut snapshot = documented_snapshot();
+        snapshot.inventory.rules[0]
+            .props
+            .insert("rule".into(), json!(source));
+        snapshot.inventory.rules[0]
+            .props
+            .insert("comment".into(), json!(source));
+        snapshot.guard = config_guard(&snapshot.inventory, "blue").unwrap();
+        let (mut app, rx) = filter_test_app(Some(snapshot));
+        filter_test_key(&mut app, field);
+        (app, rx)
+    }
+
+    #[test]
+    fn mikrotik_final_002_multiline_open_uses_actual_raw_viewport() {
+        for (source, tail, _) in multiline_sources() {
+            for field in [KeyCode::Char('e'), KeyCode::Char('c')] {
+                for (width, height) in [(80, 18), (64, 16)] {
+                    let (mut app, mut rx) = multiline_app(&source, field);
+                    let output = rows(&mut app, width, height);
+                    assert!(
+                        output.iter().any(|row| row.contains(&format!("{tail}▏"))),
+                        "opening cursor hidden at {width}x{height}: {output:?}"
+                    );
+                    let e = app.native_filter_editor.as_ref().unwrap();
+                    assert_eq!(e.text, source);
+                    assert_eq!(e.comment, source);
+                    assert_eq!(e.cursor, source.len());
+                    assert_eq!(e.base.inventory.rules[0].props["rule"], source);
+                    assert!(rx.try_recv().is_err());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn mikrotik_final_002_multiline_typing_and_navigation_keep_cursor_visible() {
+        for (source, tail, previous) in multiline_sources() {
+            for (width, height) in [(80, 18), (64, 16)] {
+                let (mut app, mut rx) = multiline_app(&source, KeyCode::Char('e'));
+                filter_test_key(&mut app, KeyCode::Char('β'));
+                let output = rows(&mut app, width, height).join("\n");
+                assert!(
+                    output.contains(&format!("{tail}β▏")),
+                    "typed cursor hidden at {width}x{height}: {output}"
+                );
+                filter_test_key(&mut app, KeyCode::Left);
+                assert!(rows(&mut app, width, height)
+                    .join("\n")
+                    .contains(&format!("{tail}▏β")));
+                filter_test_key(&mut app, KeyCode::Right);
+                filter_test_key(&mut app, KeyCode::Enter);
+                filter_test_key(&mut app, KeyCode::Char('新'));
+                let output = rows(&mut app, width, height).join("\n");
+                // TestBackend retains a blank continuation cell for the wide glyph.
+                assert!(output.contains("新 ▏"), "after newline/input: {output}");
+                filter_test_key(&mut app, KeyCode::Home);
+                assert!(rows(&mut app, width, height).join("\n").contains("▏新"));
+                filter_test_key(&mut app, KeyCode::Up);
+                filter_test_key(&mut app, KeyCode::Up);
+                assert!(rows(&mut app, width, height)
+                    .join("\n")
+                    .contains(&format!("▏{previous}")));
+                filter_test_key(&mut app, KeyCode::Down);
+                filter_test_key(&mut app, KeyCode::End);
+                assert!(rows(&mut app, width, height)
+                    .join("\n")
+                    .contains(&format!("{tail}β▏")));
+                crate::app::handle_key(
+                    &mut app,
+                    KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+                );
+                let e = app.native_filter_editor.as_ref().unwrap();
+                assert_eq!(e.rules[0].props["rule"], source.clone() + "β\n新");
+                assert_eq!(e.base.inventory.rules[0].props["rule"], source);
+                assert!(e.raw_field.is_none());
+                assert!(rx.try_recv().is_err(), "Ctrl-S only saves locally");
+                filter_test_key(&mut app, KeyCode::Char('s'));
+                filter_test_key(&mut app, KeyCode::Enter);
+                assert_eq!(
+                    app.native_filter_editor.as_ref().unwrap().stage,
+                    crate::app::NativeEditorStage::Review
+                );
+                assert!(rx.try_recv().is_err(), "Review is not confirmation");
+                filter_test_key(&mut app, KeyCode::Enter);
+                assert!(matches!(
+                    rx.try_recv().unwrap(),
+                    crate::events::FetchRequest::ApplyMikroTik(_)
+                ));
+                assert!(rx.try_recv().is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn mikrotik_final_002_multiline_resize_reveals_cursor_without_changing_source() {
+        let source = multiline_sources()[1].0.clone();
+        let (mut app, mut rx) = multiline_app(&source, KeyCode::Char('e'));
+        let mut terminal = Terminal::new(TestBackend::new(80, 50)).unwrap();
+        for (width, height) in [(80, 50), (80, 18), (64, 16), (80, 18)] {
+            terminal.backend_mut().resize(width, height);
+            terminal.draw(|f| crate::ui::draw(f, &mut app)).unwrap();
+            let output = terminal
+                .backend()
+                .buffer()
+                .content
+                .chunks(usize::from(width))
+                .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                output.contains("tail α▏"),
+                "resize cursor hidden at {width}x{height}: {output}"
+            );
+            let e = app.native_filter_editor.as_ref().unwrap();
+            assert_eq!(e.text, source);
+            assert_eq!(e.cursor, source.len());
+        }
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn mikrotik_final_002_manual_page_scroll_survives_redraw_until_cursor_navigation() {
+        let source = multiline_sources()[1].0.clone();
+        let (mut app, _) = multiline_app(&source, KeyCode::Char('e'));
+        rows(&mut app, 80, 18);
+        filter_test_key(&mut app, KeyCode::PageUp);
+        let scroll = app.native_filter_editor.as_ref().unwrap().scroll;
+        for _ in 0..2 {
+            let output = rows(&mut app, 80, 18).join("\n");
+            assert!(output.contains("line23 α"));
+            assert!(!output.contains("tail α▏"));
+            assert_eq!(app.native_filter_editor.as_ref().unwrap().scroll, scroll);
+        }
+        filter_test_key(&mut app, KeyCode::PageDown);
+        assert!(rows(&mut app, 80, 18).join("\n").contains("tail α▏"));
+        filter_test_key(&mut app, KeyCode::PageUp);
+        rows(&mut app, 80, 18);
+        filter_test_key(&mut app, KeyCode::Left);
+        let output = rows(&mut app, 80, 18).join("\n");
+        assert!(
+            output.contains("tail ▏"),
+            "after manual scroll + navigation: {output}"
+        );
+        assert_eq!(app.native_filter_editor.as_ref().unwrap().text, source);
+    }
+
     #[test]
     fn mikrotik_filter_real_render_and_keys_pin_native_controls_warning_and_raw_cursor() {
         let (mut app, mut rx) = filter_test_app(None);

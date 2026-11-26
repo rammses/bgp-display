@@ -38,6 +38,8 @@ pub struct NativeFilterEditorState {
     pub editing_id: Option<String>,
     pub cursor: usize,
     pub scroll: u16,
+    pub(crate) raw_viewport: Option<(u16, u16)>,
+    pub(crate) raw_follow_cursor: bool,
     pub shared_acknowledged: bool,
     pub read_only_reason: Option<String>,
     pub consumers: Vec<String>,
@@ -218,6 +220,8 @@ impl NativeFilterEditorState {
         };
         self.raw_field = Some(field);
         self.scroll = 0;
+        self.raw_viewport = None;
+        self.raw_follow_cursor = true;
         self.error = None;
         Ok(())
     }
@@ -339,16 +343,19 @@ impl NativeFilterEditorState {
             }
             KeyCode::PageDown => {
                 self.scroll = self.scroll.saturating_add(5);
+                self.raw_follow_cursor = false;
                 return Ok(());
             }
             KeyCode::PageUp => {
                 self.scroll = self.scroll.saturating_sub(5);
+                self.raw_follow_cursor = false;
                 return Ok(());
             }
-            _ => {}
+            _ => return Ok(()),
         }
-        let line = text[..self.cursor].bytes().filter(|b| *b == b'\n').count();
-        self.scroll = u16::try_from(line.saturating_sub(3)).unwrap_or(u16::MAX);
+        // Visibility is resolved against the actual rendered raw area, not an
+        // assumed number of rows. Explicit page scrolling opts out until input.
+        self.raw_follow_cursor = true;
         Ok(())
     }
 }
@@ -414,6 +421,8 @@ impl App {
                 editing_id: None,
                 cursor: 0,
                 scroll: 0,
+                raw_viewport: None,
+                raw_follow_cursor: true,
                 shared_acknowledged: false,
                 read_only_reason,
                 stage: NativeEditorStage::Fields,

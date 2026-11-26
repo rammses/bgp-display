@@ -266,7 +266,7 @@ pub(crate) fn project_native(snapshot: &MikroTikSnapshot) -> Result<NativeProjec
             .or_else(|| number(&row.record, "as"));
         let state = match runtime.and_then(|session| flag(session, "established")) {
             Some(true) => BgpState::Established,
-            Some(false) => BgpState::Unknown("not established (native)".into()),
+            Some(false) => BgpState::NotEstablished,
             None => BgpState::Unknown("unobserved".into()),
         };
         let source = format!(
@@ -489,7 +489,7 @@ impl App {
 
     pub(crate) fn reject_native_management(&mut self) -> bool {
         if self.is_native_selected() {
-            self.set_status("MikroTik: generic CLI/clone/policy/template editing unavailable; use native neighbor controls. Filters remain read-only.");
+            self.set_status("MikroTik: generic CLI/clone/policy/list/template editing unavailable; use native neighbor controls or Config chain ordered filter editing. Advertisements / MTU unavailable.");
             true
         } else {
             false
@@ -970,6 +970,250 @@ mod tests {
             }
         }
         requests
+    }
+
+    fn final_session_snapshot() -> MikroTikSnapshot {
+        let mut snapshot = documented_snapshot();
+        snapshot.inventory.connections.truncate(1);
+        // Administrative configuration is independent of runtime establishment.
+        snapshot.inventory.connections[0]
+            .props
+            .insert("disabled".into(), serde_json::json!(true));
+        rebuild_final_peers(&mut snapshot);
+        snapshot
+    }
+
+    fn rebuild_final_peers(snapshot: &mut MikroTikSnapshot) {
+        snapshot.peers = crate::router::mikrotik::join_native_peers(
+            &snapshot.inventory,
+            "blue",
+            snapshot.generation,
+        )
+        .unwrap();
+        snapshot.guard =
+            crate::router::mikrotik::config_guard(&snapshot.inventory, "blue").unwrap();
+    }
+
+    fn tracked_final_delivery(
+        app: &mut App,
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<FetchRequest>,
+        mut snapshot: MikroTikSnapshot,
+    ) {
+        app.request_native_refresh(Uuid::nil());
+        let FetchRequest::RefreshMikroTik {
+            router_id,
+            request,
+            instance,
+        } = rx.try_recv().unwrap()
+        else {
+            panic!("tracked native refresh required")
+        };
+        assert_eq!(router_id, Uuid::nil());
+        assert_eq!(instance.as_deref(), Some("blue"));
+        snapshot.request = request;
+        app.handle_native_data(router_id, request, NativeDiscovery::Snapshot(snapshot));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn mikrotik_final_001_observed_loss_and_recovery_record_exact_transitions() {
+        let (mut app, mut rx) = app();
+        let mut snapshot = final_session_snapshot();
+        tracked_final_delivery(&mut app, &mut rx, snapshot.clone());
+        let key = (
+            Uuid::nil(),
+            PeerKey::RouterOsConnection {
+                instance: "blue".into(),
+                name: "peer-a".into(),
+            },
+        );
+        assert_eq!(app.current_peers[0].identity(), key.1);
+        assert!(
+            app.peer_state_history.is_empty(),
+            "first snapshot is not a transition"
+        );
+        assert_eq!(app.peer_down_alert_tick, None);
+        for (established, tick) in [(false, 41), (true, 42)] {
+            snapshot.inventory.sessions[0]
+                .props
+                .insert("established".into(), serde_json::json!(established));
+            rebuild_final_peers(&mut snapshot);
+            app.tick_counter = tick;
+            tracked_final_delivery(&mut app, &mut rx, snapshot.clone());
+            assert_eq!(app.current_peers[0].admin_disabled, Some(true));
+            if !established {
+                assert_eq!(app.peer_down_alert_tick, Some(41));
+                assert!(app
+                    .status_message
+                    .as_deref()
+                    .unwrap()
+                    .contains("PEER DOWN: 192.0.2.2"));
+                assert_eq!(app.peer_state_history[&key].len(), 1);
+            } else {
+                assert!(app
+                    .status_message
+                    .as_deref()
+                    .unwrap()
+                    .contains("Peer 192.0.2.2"));
+                assert!(app
+                    .status_message
+                    .as_deref()
+                    .unwrap()
+                    .contains("is Established"));
+            }
+        }
+        assert_eq!(app.peer_state_history.len(), 1);
+        let history = app.peer_state_history[&key]
+            .iter()
+            .map(|(_, old, new)| (old.as_str(), new.as_str()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            history,
+            [
+                ("Established", "Not established"),
+                ("Not established", "Established")
+            ]
+        );
+        assert_eq!(app.peer_down_alert_tick, Some(41));
+        let transitions = app
+            .conn_logs
+            .iter()
+            .filter(|line| line.contains("Peer 192.0.2.2"))
+            .collect::<Vec<_>>();
+        assert_eq!(transitions.len(), 2);
+        assert!(transitions[0].contains("▼ DOWN: Established → Not established"));
+        assert!(transitions[1].contains("▲ UP: Not established → Established"));
+    }
+
+    #[test]
+    fn mikrotik_final_001_observed_negative_is_known_not_partial_or_first_transition() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let (mut app, mut rx) = app();
+        let mut snapshot = final_session_snapshot();
+        snapshot.inventory.sessions[0]
+            .props
+            .insert("established".into(), serde_json::json!(false));
+        rebuild_final_peers(&mut snapshot);
+        tracked_final_delivery(&mut app, &mut rx, snapshot);
+        assert!(app.peer_state_history.is_empty());
+        assert_eq!(app.peer_down_alert_tick, None);
+        let mut terminal = Terminal::new(TestBackend::new(180, 45)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content
+            .chunks(180)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let established = rows
+            .iter()
+            .find(|row| row.contains("  Established  "))
+            .unwrap();
+        assert!(established.contains("Established  0 / 1"), "{established}");
+        assert!(!established.contains("partial"));
+        assert!(rows.iter().any(|row| row.contains("0/1 established")));
+    }
+
+    #[test]
+    fn mikrotik_final_001_unobserved_runtime_never_creates_down_or_recovery() {
+        for missing in [
+            "absent-session",
+            "missing-flag",
+            "unknown-flag",
+            "ambiguous-session",
+        ] {
+            let (mut app, mut rx) = app();
+            let snapshot = final_session_snapshot();
+            tracked_final_delivery(&mut app, &mut rx, snapshot.clone());
+            let mut unknown = snapshot.clone();
+            match missing {
+                "absent-session" => unknown.inventory.sessions.clear(),
+                "missing-flag" => {
+                    unknown.inventory.sessions[0].props.remove("established");
+                }
+                "unknown-flag" => {
+                    unknown.inventory.sessions[0]
+                        .props
+                        .insert("established".into(), serde_json::json!("unknown"));
+                }
+                _ => {
+                    let mut duplicate = unknown.inventory.sessions[0].clone();
+                    duplicate.id = "*AA".into();
+                    duplicate
+                        .props
+                        .insert("established".into(), serde_json::json!(false));
+                    unknown.inventory.sessions.push(duplicate);
+                }
+            }
+            rebuild_final_peers(&mut unknown);
+            tracked_final_delivery(&mut app, &mut rx, unknown);
+            assert!(
+                matches!(app.current_peers[0].state, BgpState::Unknown(_)),
+                "{missing}"
+            );
+            tracked_final_delivery(&mut app, &mut rx, snapshot);
+            assert!(app.peer_state_history.is_empty(), "{missing}");
+            assert_eq!(app.peer_down_alert_tick, None, "{missing}");
+            assert!(
+                !app.conn_logs
+                    .iter()
+                    .any(|line| line.contains("▼ DOWN") || line.contains("▲ UP")),
+                "{missing}"
+            );
+        }
+    }
+
+    #[test]
+    fn mikrotik_final_001_wrong_origin_negative_cannot_alert_or_replace_observation() {
+        for origin in [
+            "router",
+            "registration-router",
+            "hostname",
+            "username",
+            "port",
+            "instance",
+            "payload-request",
+            "event-request",
+        ] {
+            let (mut app, mut rx) = app();
+            let snapshot = final_session_snapshot();
+            tracked_final_delivery(&mut app, &mut rx, snapshot.clone());
+            let mut negative = snapshot.clone();
+            negative.inventory.sessions[0]
+                .props
+                .insert("established".into(), serde_json::json!(false));
+            rebuild_final_peers(&mut negative);
+            app.request_native_refresh(Uuid::nil());
+            let request = take_native_requests(&mut rx)[0].0;
+            negative.request = request;
+            let mut event_request = request;
+            match origin {
+                "router" => negative.router_id = Uuid::from_u128(99),
+                "registration-router" => negative.registration.router_id = Uuid::from_u128(99),
+                "hostname" => negative.registration.endpoint.hostname = "other.invalid".into(),
+                "username" => negative.registration.endpoint.username = "other".into(),
+                "port" => negative.registration.endpoint.ssh_port = 2222,
+                "instance" => negative.instance = "red".into(),
+                "payload-request" => negative.request = Uuid::from_u128(99),
+                _ => event_request = Uuid::from_u128(99),
+            }
+            app.handle_native_data(
+                Uuid::nil(),
+                event_request,
+                NativeDiscovery::Snapshot(negative),
+            );
+            assert_eq!(
+                app.current_peers[0].state,
+                BgpState::Established,
+                "{origin}"
+            );
+            tracked_final_delivery(&mut app, &mut rx, snapshot);
+            assert!(app.peer_state_history.is_empty(), "{origin}");
+            assert_eq!(app.peer_down_alert_tick, None, "{origin}");
+        }
     }
 
     #[test]
@@ -1677,6 +1921,19 @@ mod tests {
         assert!(app.wizard_draft.is_none());
         assert_eq!(app.wizard_mode, super::super::WizardMode::Closed);
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn mikrotik_final_005_generic_policy_rejection_points_to_native_config_filters() {
+        let (mut app, mut rx) = app();
+        app.open_prefixlist_editor("generic-list");
+        assert_eq!(app.status_message.as_deref(), Some("MikroTik: generic CLI/clone/policy/list/template editing unavailable; use native neighbor controls or Config chain ordered filter editing. Advertisements / MTU unavailable."));
+        assert_eq!(app.wizard_mode, super::super::WizardMode::Closed);
+        assert!(app.native_editor.is_none() && app.native_filter_editor.is_none());
+        assert!(
+            rx.try_recv().is_err(),
+            "copy correction must not change execution"
+        );
     }
 
     #[test]
