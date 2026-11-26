@@ -180,7 +180,7 @@ pub(crate) fn project_native(snapshot: &MikroTikSnapshot) -> Result<NativeProjec
         None,
     );
     push(
-        "Native neighbor management: confirmed/guarded; filters read-only until native filter editor".into(),
+        "Native neighbor and ordered filter management: explicit review, guarded live steps".into(),
         None,
     );
     push("Selected effective-main observations only; audit rows excluded from peer totals. Unknown counts: N/A.".into(), None);
@@ -321,7 +321,18 @@ pub(crate) fn project_native(snapshot: &MikroTikSnapshot) -> Result<NativeProjec
         if let Some(chain) = text(rule, "chain") {
             if chains.insert(chain.to_owned()) {
                 push(
-                    format!("filter chain {chain} — filters read-only"),
+                    format!(
+                        "filter chain {chain} — {}",
+                        match crate::router::mikrotik::filter::filter_eligibility(snapshot, chain) {
+                            Ok(eligibility) =>
+                                if eligibility.consumers.is_empty() {
+                                    "eligible for guarded editing; residual dependency risks".into()
+                                } else {
+                                    "eligible selected-main consumers; explicit shared acknowledgment required".into()
+                                },
+                            Err(error) => format!("read-only: {error}"),
+                        }
+                    ),
                     Some(NativeConfigTarget::Chain(chain.into())),
                 );
             }
@@ -554,6 +565,13 @@ impl App {
     /// Invalidate BEFORE registration control and any subsequent tracked read.
     pub(crate) fn invalidate_native(&mut self, id: Uuid) {
         if self
+            .native_filter_editor
+            .as_ref()
+            .is_some_and(|e| e.router_id == id)
+        {
+            self.native_filter_editor = None;
+        }
+        if self
             .native_editor
             .as_ref()
             .is_some_and(|e| e.router_id == id)
@@ -716,7 +734,10 @@ impl App {
             return;
         };
         cache.stale_reason = Some(presentation_text(&safe_error));
-        if self.selected_router().is_some_and(|r| r.id == id) && self.native_editor.is_none() {
+        if self.selected_router().is_some_and(|r| r.id == id)
+            && self.native_editor.is_none()
+            && self.native_filter_editor.is_none()
+        {
             self.set_status(format!(
                 "Native data stale/unavailable: {}",
                 presentation_text(&safe_error)

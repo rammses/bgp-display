@@ -4,6 +4,7 @@ pub mod conn_log;
 pub mod dashboard;
 pub mod help_overlay;
 pub mod logs;
+pub mod mikrotik_filter_editor;
 pub mod mikrotik_neighbor_editor;
 pub mod neighbor_wizard;
 pub mod peer_routes;
@@ -103,6 +104,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     // change must never be obscured by a legacy/help/history modal.
     if app.native_editor.is_some() {
         mikrotik_neighbor_editor::draw(f, app);
+    }
+    if app.native_filter_editor.is_some() {
+        mikrotik_filter_editor::draw(f, app);
     }
 }
 
@@ -243,7 +247,7 @@ fn draw_help(f: &mut Frame, app: &App, area: Rect) {
         keys.push((
             "e",
             if app.is_native_selected() {
-                "Native neighbor / filters read-only"
+                "Native neighbor / ordered filters (review)"
             } else {
                 "Edit RM/PL"
             },
@@ -908,7 +912,10 @@ mod native_tests {
         app.current_tab = ActiveTab::Config;
         let output = screen(&mut app);
         assert!(output.contains("other-protocol"));
-        assert!(output.contains("filters read-only"));
+        // Task6 replaces the staged blanket read-only label with the guarded
+        // native editor; the residual audit warning and no-Cisco boundary stay.
+        assert!(output.contains("ordered filters"));
+        assert!(output.contains("explicit review"));
         assert!(!output.contains("configure terminal"));
     }
 

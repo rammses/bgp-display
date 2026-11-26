@@ -2,6 +2,7 @@
 
 mod apply;
 mod codec;
+pub(crate) mod filter;
 mod model;
 mod read;
 mod scope;
@@ -13,11 +14,12 @@ pub use crate::router::commands::mikrotik::preview_native;
 pub use apply::apply_native;
 pub(crate) use apply::rejected_receipt;
 pub use codec::{decode_envelope, presentation_text, require_target_version, ros_string};
+pub use filter::validate_filter_change;
 pub use model::{
     ConfigGuard, MikroTikSnapshot, NativeConnectionDraft, NativeConnectionRef, NativeDiscovery,
-    NativeIntent, NativeInventory, NativeOutcome, NativePatch, NativePeerRow, NativePreview,
-    NativeRead, NativeReceipt, NativeRecord, NativeWireError, Properties, ScopeEligibility,
-    SecretChange,
+    NativeFilterChange, NativeIntent, NativeInventory, NativeOutcome, NativePatch, NativePeerRow,
+    NativePreview, NativeRead, NativeReceipt, NativeRecord, NativeRuleDraft, NativeRuleEdit,
+    NativeWireError, Properties, ScopeEligibility, SecretChange,
 };
 pub(crate) use read::effective_local_as;
 pub use read::fetch_native;
@@ -165,6 +167,54 @@ mod neighbor_operation_tests {
     use super::test_support::*;
     use super::*;
     use serde_json::{json, Value};
+
+    #[tokio::test]
+    async fn mikrotik_filter_backend_waiting_operation_never_retargets_replacement() {
+        use futures::poll;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let original = cfg();
+        let manager = SshSessionManager::new(&[original.clone()]);
+        let registration = manager.native_registration(original.id).await.unwrap();
+        let held = manager.native_lease(&registration).await.unwrap();
+        let mut snapshot = documented_snapshot();
+        snapshot.registration = registration.clone();
+        let preview = preview_native(
+            &snapshot,
+            NativeIntent::Filter(NativeFilterChange {
+                chain: "blue-in".into(),
+                shared_acknowledged: true,
+                edits: vec![NativeRuleEdit::Insert {
+                    before: Some("*5".into()),
+                    rule: NativeRuleDraft {
+                        text: "accept;".into(),
+                        comment: String::new(),
+                        disabled: false,
+                    },
+                }],
+            }),
+            Uuid::from_u128(42),
+        )
+        .unwrap();
+        let backend = MikroTikBackend::new(&original, Arc::clone(&manager));
+        let called = AtomicBool::new(false);
+        let flag = &called;
+        let mut task = Box::pin(backend.apply_with(preview, |_lease, p| async move {
+            flag.store(true, Ordering::SeqCst);
+            rejected_receipt(&p)
+        }));
+        assert!(poll!(task.as_mut()).is_pending());
+        let mut replacement = original;
+        replacement.hostname = "replacement.invalid".into();
+        manager.register_router(replacement).await;
+        drop(held);
+        let receipt = task.await;
+        assert_eq!(receipt.outcome, NativeOutcome::RejectedBeforeWrite);
+        assert_eq!(receipt.registration, registration);
+        assert!(
+            receipt.summary.contains("chain=\"blue-in\"") && receipt.summary.contains("Insert")
+        );
+        assert!(!called.load(Ordering::SeqCst));
+    }
 
     fn admin(snapshot: &MikroTikSnapshot, disabled: bool) -> NativePreview {
         preview_native(

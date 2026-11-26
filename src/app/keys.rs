@@ -12,6 +12,10 @@ pub fn handle_key(app: &mut App, key: crossterm::event::KeyEvent) {
     use crossterm::event::{KeyCode, KeyModifiers};
 
     // A native intention owns all input before ANY legacy wizard interception.
+    if app.native_filter_editor.is_some() {
+        app.handle_native_filter_key(key);
+        return;
+    }
     if app.native_editor.is_some() {
         app.handle_native_editor_key(key);
         return;

@@ -190,7 +190,7 @@ fn draw_right_panel(f: &mut Frame, app: &App, area: Rect) {
         .is_some_and(|r| r.vendor == crate::router::RouterVendor::MikroTik)
     {
         let mut lines = vec![
-            Line::from("Native neighbor management — explicit review; filters read-only"),
+            Line::from("Native neighbors / ordered filters — explicit review (e)"),
             Line::from("Config navigation uses this displayed snapshot only."),
             Line::from("Audit: nested/other-protocol filter consumers unknown."),
             Line::from("Advertisements / MTU unavailable; no hidden probes."),
@@ -207,10 +207,26 @@ fn draw_right_panel(f: &mut Frame, app: &App, area: Rect) {
                         connection.instance, connection.name, connection.observed_id
                     ),
                     crate::app::NativeConfigTarget::Chain(chain) => {
-                        format!("Filter chain: {chain}")
+                        let eligibility =
+                            crate::router::mikrotik::filter::filter_eligibility(source, chain);
+                        format!(
+                            "Filter chain: {chain} — {}",
+                            match eligibility {
+                                Ok(_) =>
+                                    "guarded edits; shared acknowledgment when referenced".into(),
+                                Err(error) => format!("READ-ONLY: {error}"),
+                            }
+                        )
                     }
                 },
             )));
+            if let crate::app::NativeConfigTarget::Chain(chain) = target {
+                lines.extend(
+                    crate::router::mikrotik::filter::known_filter_consumers(source, chain)
+                        .into_iter()
+                        .map(|s| Line::from(crate::router::mikrotik::presentation_text(&s))),
+                );
+            }
         }
         if let Some(reason) = app
             .selected_router()

@@ -14,6 +14,275 @@ pub(crate) struct CompiledStep {
     pub(crate) safe_label: String,
 }
 
+// Operation-local plans contain typed data, never replaceable script fragments.
+// The 64-byte bound is OUR reservation, not a RouterOS format/size claim.
+const INSERTED_ID_RESERVATION: usize = 64;
+pub(crate) type RuleBindings = BTreeMap<usize, String>;
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) enum RuleId {
+    Observed(String),
+    Inserted(usize),
+}
+pub(crate) enum PlannedStep {
+    Ready(CompiledStep),
+    Rule(RuleStepPlan),
+}
+pub(crate) enum RuleStepPlan {
+    Insert {
+        operation: Uuid,
+        chain: String,
+        properties: Properties,
+        slot: usize,
+    },
+    Patch {
+        operation: Uuid,
+        chain: String,
+        id: RuleId,
+        set: Properties,
+    },
+    Move {
+        operation: Uuid,
+        chain: String,
+        id: RuleId,
+        before: Option<RuleId>,
+        order_before: Vec<RuleId>,
+        order_after: Vec<RuleId>,
+    },
+}
+impl std::fmt::Debug for RuleId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RuleId { [redacted] }")
+    }
+}
+impl std::fmt::Debug for RuleStepPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("RuleStepPlan { [redacted] }")
+    }
+}
+impl std::fmt::Debug for PlannedStep {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("PlannedStep { [redacted] }")
+    }
+}
+impl RuleId {
+    fn resolve(&self, bindings: &RuleBindings) -> Result<String> {
+        let value = match self {
+            Self::Observed(id) => id,
+            Self::Inserted(slot) => bindings.get(slot).context("unbound native rule symbol")?,
+        };
+        crate::router::mikrotik::filter::observed_rule_id(value)?;
+        if matches!(self, Self::Inserted(_)) {
+            ensure!(
+                value.len() <= INSERTED_ID_RESERVATION,
+                "native rule binding exceeds application reservation"
+            );
+        }
+        Ok(value.clone())
+    }
+}
+impl PlannedStep {
+    pub(crate) fn safe_label(&self) -> &str {
+        match self {
+            Self::Ready(step) => &step.safe_label,
+            Self::Rule(plan) => plan.safe_label(),
+        }
+    }
+    pub(crate) fn insertion_slot(&self) -> Option<usize> {
+        match self {
+            Self::Rule(RuleStepPlan::Insert { slot, .. }) => Some(*slot),
+            _ => None,
+        }
+    }
+    pub(crate) fn materialize(self, bindings: &RuleBindings) -> Result<CompiledStep> {
+        match self {
+            Self::Ready(step) => Ok(step),
+            Self::Rule(plan) => plan.materialize(bindings),
+        }
+    }
+}
+impl RuleStepPlan {
+    fn safe_label(&self) -> &'static str {
+        match self {
+            Self::Insert { .. } => "Insert disabled native rule",
+            Self::Patch { .. } => "Set native rule properties/state",
+            Self::Move { .. } => "Position exact native rule",
+        }
+    }
+    fn materialize(&self, bindings: &RuleBindings) -> Result<CompiledStep> {
+        let (operation, label, body, approved) = self.render(bindings)?;
+        mutation(operation, label, body, approved, self.safe_label())
+    }
+    fn render(
+        &self,
+        bindings: &RuleBindings,
+    ) -> Result<(Uuid, &'static str, String, ApprovedChange)> {
+        match self {
+            Self::Insert {
+                operation,
+                chain,
+                properties,
+                ..
+            } => Ok((
+                *operation,
+                "filter.insert",
+                format!(
+                    ":local mttarget [/routing/filter/rule/add {}]",
+                    assignments(properties)?
+                ),
+                ApprovedChange::Insert {
+                    collection: "rules".into(),
+                    identity: Properties::from([("chain".into(), json!(chain))]),
+                    required: properties.clone(),
+                },
+            )),
+            Self::Patch {
+                operation,
+                chain,
+                id,
+                set,
+            } => {
+                let id = id.resolve(bindings)?;
+                Ok((
+                    *operation,
+                    "filter.patch",
+                    format!(
+                        "{}/routing/filter/rule/set $mttarget {}",
+                        rule_selector(chain, &id),
+                        assignments(set)?
+                    ),
+                    ApprovedChange::Patch {
+                        collection: "rules".into(),
+                        id,
+                        set: set.clone(),
+                    },
+                ))
+            }
+            Self::Move {
+                operation,
+                chain,
+                id,
+                before,
+                order_before,
+                order_after,
+            } => {
+                let id = id.resolve(bindings)?;
+                let before = before.as_ref().map(|r| r.resolve(bindings)).transpose()?;
+                let anchor=before.as_ref().map(|id|format!(":if ([/routing/filter/rule/get {} chain]!={}) do={{ :error \"anchor-chain\" }}; ",ros_string(id),ros_string(chain))).unwrap_or_default();
+                let destination = before
+                    .as_ref()
+                    .map(|id| format!(" {}", ros_string(id)))
+                    .unwrap_or_default();
+                Ok((
+                    *operation,
+                    "filter.move",
+                    format!(
+                        "{}{anchor}/routing/filter/rule/move $mttarget{destination}",
+                        rule_selector(chain, &id)
+                    ),
+                    ApprovedChange::RuleOrder {
+                        chain: chain.clone(),
+                        id,
+                        before,
+                        order_before: order_before
+                            .iter()
+                            .map(|r| r.resolve(bindings))
+                            .collect::<Result<_>>()?,
+                        order_after: order_after
+                            .iter()
+                            .map(|r| r.resolve(bindings))
+                            .collect::<Result<_>>()?,
+                    },
+                ))
+            }
+        }
+    }
+}
+
+pub(crate) fn bind_inserted_rule(bindings: &mut RuleBindings, slot: usize, id: &str) -> Result<()> {
+    crate::router::mikrotik::filter::observed_rule_id(id)?;
+    ensure!(
+        id.len() <= INSERTED_ID_RESERVATION
+            && !bindings.contains_key(&slot)
+            && !bindings.values().any(|v| v == id),
+        "invalid native rule binding"
+    );
+    bindings.insert(slot, id.into());
+    Ok(())
+}
+
+fn preflight_rule_plans(plans: &[PlannedStep]) -> Result<()> {
+    let mut reserved = RuleBindings::new();
+    for step in plans {
+        if let PlannedStep::Rule(plan) = step {
+            let _checked_worst_case = plan.materialize(&reserved)?;
+            if let Some(slot) = step.insertion_slot() {
+                ensure!(
+                    !reserved.contains_key(&slot),
+                    "duplicate native insertion slot"
+                );
+                reserved.insert(slot, reserved_rule_id(slot)?);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reserved_rule_id(slot: usize) -> Result<String> {
+    let tail = format!("{slot:X}");
+    ensure!(
+        tail.len() < INSERTED_ID_RESERVATION,
+        "native insertion slot limit"
+    );
+    Ok(format!(
+        "*{}{tail}",
+        "F".repeat(INSERTED_ID_RESERVATION - 1 - tail.len())
+    ))
+}
+
+fn preflight_rule_state(rules: &[NativeRecord], chain: &str, operation: Uuid) -> Result<()> {
+    let mut reserved = RuleBindings::new();
+    for row in rules {
+        if let RuleId::Inserted(slot) = symbolic_id(&row.id)? {
+            reserved.insert(slot, reserved_rule_id(slot)?);
+        }
+    }
+    for row in rules
+        .iter()
+        .filter(|r| r.props.get("chain").and_then(Value::as_str) == Some(chain))
+    {
+        let draft = crate::router::mikrotik::filter::rule_draft(row)?;
+        let _checked = RuleStepPlan::Patch {
+            operation,
+            chain: chain.into(),
+            id: symbolic_id(&row.id)?,
+            set: crate::router::mikrotik::filter::draft_properties(&draft),
+        }
+        .materialize(&reserved)?;
+    }
+    Ok(())
+}
+
+fn rule_selector(chain: &str, id: &str) -> String {
+    format!(":local mttarget {}; :if ([/routing/filter/rule/get $mttarget chain]!={}) do={{ :error \"target-chain\" }}; ",ros_string(id),ros_string(chain))
+}
+
+pub(crate) fn check_existing_rule_budget(row: &NativeRecord) -> Result<()> {
+    let chain = row
+        .props
+        .get("chain")
+        .and_then(Value::as_str)
+        .context("rule chain unavailable")?;
+    let draft = crate::router::mikrotik::filter::rule_draft(row)?;
+    let _checked = RuleStepPlan::Patch {
+        operation: Uuid::from_u128(1),
+        chain: chain.into(),
+        id: RuleId::Observed(row.id.clone()),
+        set: crate::router::mikrotik::filter::draft_properties(&draft),
+    }
+    .materialize(&RuleBindings::new())?;
+    Ok(())
+}
+
 pub(crate) enum ApprovedChange {
     Insert {
         collection: String,
@@ -29,17 +298,12 @@ pub(crate) enum ApprovedChange {
         collection: String,
         id: String,
     },
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "approved shared delta variant; native filter compiler is Task6, not neighbor scope"
-        )
-    )]
     RuleOrder {
         chain: String,
-        before: Vec<String>,
-        after: Vec<String>,
+        id: String,
+        before: Option<String>,
+        order_before: Vec<String>,
+        order_after: Vec<String>,
     },
 }
 
@@ -717,7 +981,7 @@ fn mutation(
     })
 }
 
-pub(crate) fn compile_native(
+fn compile_ready_native(
     snapshot: &MikroTikSnapshot,
     intent: &NativeIntent,
     operation: Uuid,
@@ -729,6 +993,7 @@ pub(crate) fn compile_native(
         "invalid native operation identity"
     );
     match intent {
+        NativeIntent::Filter(_) => bail!("filter intent requires typed rule planning"),
         NativeIntent::Create(d) => {
             let props = new_properties(snapshot, d, operation)?;
             let (input, output) = chain_names(operation);
@@ -868,6 +1133,238 @@ pub(crate) fn compile_native(
     }
 }
 
+pub(crate) fn compile_native(
+    snapshot: &MikroTikSnapshot,
+    intent: &NativeIntent,
+    operation: Uuid,
+    original_generation: Uuid,
+) -> Result<Vec<PlannedStep>> {
+    config_guard(&snapshot.inventory, &snapshot.instance)?;
+    ensure!(
+        !operation.is_nil() && snapshot.router_id == snapshot.registration.router_id,
+        "invalid native operation identity"
+    );
+    match intent {
+        NativeIntent::Filter(change) => compile_filter_change(snapshot, change, operation),
+        _ => Ok(
+            compile_ready_native(snapshot, intent, operation, original_generation)?
+                .into_iter()
+                .map(PlannedStep::Ready)
+                .collect(),
+        ),
+    }
+}
+
+fn symbolic_id(id: &str) -> Result<RuleId> {
+    if let Some(slot) = id.strip_prefix("@insert/") {
+        Ok(RuleId::Inserted(slot.parse().map_err(|_| {
+            anyhow::anyhow!("invalid compiler-owned rule symbol")
+        })?))
+    } else {
+        crate::router::mikrotik::filter::observed_rule_id(id)?;
+        Ok(RuleId::Observed(id.into()))
+    }
+}
+
+fn planned_move(
+    rules: &[NativeRecord],
+    after: &[NativeRecord],
+    id: &str,
+    before: &Option<String>,
+    chain: &str,
+    operation: Uuid,
+) -> Result<PlannedStep> {
+    Ok(PlannedStep::Rule(RuleStepPlan::Move {
+        operation,
+        chain: chain.into(),
+        id: symbolic_id(id)?,
+        before: before.as_deref().map(symbolic_id).transpose()?,
+        order_before: rules
+            .iter()
+            .map(|r| symbolic_id(&r.id))
+            .collect::<Result<_>>()?,
+        order_after: after
+            .iter()
+            .map(|r| symbolic_id(&r.id))
+            .collect::<Result<_>>()?,
+    }))
+}
+
+fn compile_filter_change(
+    snapshot: &MikroTikSnapshot,
+    change: &NativeFilterChange,
+    operation: Uuid,
+) -> Result<Vec<PlannedStep>> {
+    use crate::router::mikrotik::filter::{
+        compile_rule_edit, ensure_enabled_rule_survives, simulate_rule_edit,
+    };
+    validate_filter_change(snapshot, change)?;
+    for row in &snapshot.inventory.rules {
+        crate::router::mikrotik::filter::observed_rule_id(&row.id)?;
+    }
+    let mut rules = snapshot.inventory.rules.clone();
+    let mut plans = Vec::new();
+    let mut slot = 0;
+    for edit in &change.edits {
+        let selected = rules
+            .iter()
+            .filter(|r| r.props["chain"].as_str() == Some(change.chain.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        let after = simulate_rule_edit(&selected, edit)?;
+        ensure_enabled_rule_survives(&after)?;
+        match edit {
+            NativeRuleEdit::Insert { before, rule } => {
+                ensure_enabled_rule_survives(&selected)?; // insertion first exists disabled
+                let mut properties = crate::router::mikrotik::filter::draft_properties(rule);
+                properties.insert("chain".into(), json!(change.chain));
+                properties.insert("disabled".into(), json!(true));
+                plans.push(PlannedStep::Rule(RuleStepPlan::Insert {
+                    operation,
+                    chain: change.chain.clone(),
+                    properties: properties.clone(),
+                    slot,
+                }));
+                let id = format!("@insert/{slot}");
+                rules.push(NativeRecord {
+                    id: id.clone(),
+                    props: properties,
+                });
+                // The newly inserted disabled source must also remain eligible
+                // for our following steps, at the reserved maximum ID size.
+                preflight_rule_state(&rules, &change.chain, operation)?;
+                let moved = simulate_rule_edit(
+                    &rules,
+                    &NativeRuleEdit::Move {
+                        id: id.clone(),
+                        before: before.clone(),
+                    },
+                )?;
+                if rules != moved {
+                    plans.push(planned_move(
+                        &rules,
+                        &moved,
+                        &id,
+                        before,
+                        &change.chain,
+                        operation,
+                    )?);
+                }
+                rules = moved;
+                if !rule.disabled {
+                    let set = Properties::from([("disabled".into(), json!(false))]);
+                    plans.push(PlannedStep::Rule(RuleStepPlan::Patch {
+                        operation,
+                        chain: change.chain.clone(),
+                        id: RuleId::Inserted(slot),
+                        set,
+                    }));
+                    rules
+                        .iter_mut()
+                        .find(|r| r.id == id)
+                        .context("compiler-owned rule missing")?
+                        .props
+                        .insert("disabled".into(), json!(false));
+                }
+                slot += 1;
+            }
+            NativeRuleEdit::Move { id, before } => {
+                let moved = simulate_rule_edit(&rules, edit)?;
+                if rules != moved {
+                    plans.push(planned_move(
+                        &rules,
+                        &moved,
+                        id,
+                        before,
+                        &change.chain,
+                        operation,
+                    )?);
+                }
+                rules = moved;
+            }
+            _ => {
+                let after = simulate_rule_edit(&rules, edit)?;
+                plans.extend(
+                    compile_rule_edit(&rules, &after, edit, operation)?
+                        .into_iter()
+                        .map(PlannedStep::Ready),
+                );
+                rules = after;
+            }
+        }
+        preflight_rule_state(&rules, &change.chain, operation)?;
+    }
+    ensure!(
+        !plans.is_empty(),
+        "no changed native filter properties/order"
+    );
+    preflight_rule_plans(&plans)?;
+    Ok(plans)
+}
+
+pub(crate) fn compile_concrete_rule_edit(
+    before: &[NativeRecord],
+    after: &[NativeRecord],
+    edit: &NativeRuleEdit,
+    operation: Uuid,
+) -> Result<Vec<CompiledStep>> {
+    let id = match edit {
+        NativeRuleEdit::Update { id, .. }
+        | NativeRuleEdit::Delete { id }
+        | NativeRuleEdit::Move { id, .. } => id,
+        NativeRuleEdit::Insert { .. } => bail!("insertion requires symbolic rule planning"),
+    };
+    let row = before
+        .iter()
+        .find(|r| r.id == *id)
+        .context("rule target missing")?;
+    crate::router::mikrotik::filter::observed_rule_id(id)?;
+    let chain = row
+        .props
+        .get("chain")
+        .and_then(Value::as_str)
+        .context("rule chain missing")?;
+    crate::router::mikrotik::filter::ensure_same_chain_targets(before, edit, chain)?;
+    match edit {
+        NativeRuleEdit::Update { rule, .. } => {
+            let set = crate::router::mikrotik::filter::changed_properties(row, rule);
+            if set.is_empty() {
+                return Ok(vec![]);
+            }
+            Ok(vec![RuleStepPlan::Patch {
+                operation,
+                chain: chain.into(),
+                id: RuleId::Observed(id.clone()),
+                set,
+            }
+            .materialize(&RuleBindings::new())?])
+        }
+        NativeRuleEdit::Delete { .. } => Ok(vec![mutation(
+            operation,
+            "filter.delete",
+            format!(
+                "{}/routing/filter/rule/remove $mttarget",
+                rule_selector(chain, id)
+            ),
+            ApprovedChange::Remove {
+                collection: "rules".into(),
+                id: id.clone(),
+            },
+            "Delete exact native rule",
+        )?]),
+        NativeRuleEdit::Move { before: anchor, .. } => {
+            if before == after {
+                return Ok(vec![]);
+            }
+            Ok(vec![planned_move(
+                before, after, id, anchor, chain, operation,
+            )?
+            .materialize(&RuleBindings::new())?])
+        }
+        NativeRuleEdit::Insert { .. } => bail!("insertion requires symbolic rule planning"),
+    }
+}
+
 pub fn preview_native(
     snapshot: &MikroTikSnapshot,
     intent: NativeIntent,
@@ -889,6 +1386,63 @@ pub fn preview_native(
     )];
     let mut warnings = vec!["Live changes; not atomic. Observable guard is best-effort, not a device lock; another administrator can race between reads and writes. No automatic rollback or replay.".into()];
     match &intent {
+        NativeIntent::Filter(change) => {
+            use crate::router::mikrotik::filter::{
+                filter_eligibility, simulate_rule_edit, AUDIT_WARNING, LIVE_WARNING,
+            };
+            let eligibility = filter_eligibility(snapshot, &change.chain)?;
+            visible_diff.push(format!(
+                "Native chain {} — ordered minimal edits",
+                json!(change.chain)
+            ));
+            for consumer in eligibility.consumers {
+                visible_diff.push(format!("KNOWN DIRECT CONSUMER: {consumer}"));
+            }
+            visible_diff.push(format!(
+                "Shared-chain acknowledgment: {}",
+                change.shared_acknowledged
+            ));
+            let mut after = snapshot
+                .inventory
+                .rules
+                .iter()
+                .filter(|r| r.props["chain"].as_str() == Some(change.chain.as_str()))
+                .cloned()
+                .collect::<Vec<_>>();
+            visible_diff.push("BEFORE".into());
+            for row in &after {
+                visible_diff.push(format!(
+                    "{} rule={} comment={} disabled={} inactive={}",
+                    row.id,
+                    row.props["rule"],
+                    row.props.get("comment").unwrap_or(&Value::Null),
+                    row.props["disabled"],
+                    row.props.get("inactive").unwrap_or(&Value::Null)
+                ));
+            }
+            for edit in &change.edits {
+                after = simulate_rule_edit(&after, edit)?;
+            }
+            visible_diff
+                .push("AFTER (source order; new IDs pending independent verification)".into());
+            for row in after {
+                visible_diff.push(format!(
+                    "{} rule={} comment={} disabled={} inactive={}",
+                    if row.id.starts_with("@insert/") {
+                        "(new rule)"
+                    } else {
+                        &row.id
+                    },
+                    row.props["rule"],
+                    row.props.get("comment").unwrap_or(&Value::Null),
+                    row.props["disabled"],
+                    row.props.get("inactive").unwrap_or(&Value::Null)
+                ));
+            }
+            warnings.push(LIVE_WARNING.into());
+            warnings.push(AUDIT_WARNING.into());
+            warnings.push("Syntax validation is best effort; native expressions are not evaluated. No RouterOS filter wizard/dry-run is invoked.".into());
+        }
         NativeIntent::Create(d) => {
             let (input, output) = chain_names(operation);
             visible_diff.push(format!("Create {} remote {} AS {} role {} AFI {} disabled=yes; input.filter={input}, output.filter-chain={output}; enabled reject; rules",d.name,d.remote_address,d.remote_as,d.role,d.afi.join(",")));
@@ -1024,6 +1578,123 @@ pub fn preview_native(
 mod tests {
     use super::*;
     use crate::router::mikrotik::test_support::*;
+
+    #[test]
+    fn mikrotik_filter_existing_oversize_source_is_view_only_not_truncated() {
+        let mut s = documented_snapshot();
+        let raw = "α\n$\"".repeat(10000);
+        s.inventory.rules[0].props.insert("rule".into(), json!(raw));
+        assert!(crate::router::mikrotik::filter::filter_eligibility(&s, "blue-in").is_err());
+        assert_eq!(s.inventory.rules[0].props["rule"], raw);
+    }
+
+    #[test]
+    fn mikrotik_filter_compiler_quotes_hostile_text_as_one_literal_property() {
+        let plan = RuleStepPlan::Insert {
+            operation: Uuid::from_u128(42),
+            chain: "c".into(),
+            slot: 0,
+            properties: Properties::from([
+                ("chain".into(), json!("c")),
+                ("disabled".into(), json!(true)),
+                ("comment".into(), json!("α\n\"\\$")),
+                ("rule".into(), json!("α\n\"; /system/reboot; $x\\")),
+            ]),
+        };
+        let (_, label, body, _) = plan.render(&RuleBindings::new()).unwrap();
+        assert_eq!(label, "filter.insert");
+        assert_eq!(
+            body,
+            r#":local mttarget [/routing/filter/rule/add chain="c" comment="α\n\"\\\$" disabled="yes" rule="α\n\"; /system/reboot; \$x\\"]"#
+        );
+        assert!(!body.chars().any(char::is_control));
+        assert!(!format!("{plan:?}").contains("/system/reboot"));
+    }
+
+    #[test]
+    fn mikrotik_filter_symbolic_payload_budget_counts_reservation_quotes_and_envelope() {
+        // Independent literal script, including the application-reserved 64-byte ID.
+        let prefix = format!(
+            r#":local mttarget "*{}"; :if ([/routing/filter/rule/get $mttarget chain]!="c") do={{ :error "target-chain" }}; /routing/filter/rule/set $mttarget rule=""#,
+            "F".repeat(63)
+        );
+        let suffix = r#""; :local mtresult {"request"="00000000-0000-0000-0000-00000000002a";"ok"=true;"data"={"id"=[:tostr $mttarget];"applied"=true}}; :put [:serialize value=$mtresult to=json options=json.no-string-conversion]"#;
+        let available = 32768 - prefix.len() - suffix.len();
+        for (extra, want_ok) in [(0, true), (1, false)] {
+            let insert = PlannedStep::Rule(RuleStepPlan::Insert {
+                operation: Uuid::from_u128(42),
+                chain: "c".into(),
+                slot: 0,
+                properties: Properties::from([
+                    ("chain".into(), json!("c")),
+                    ("rule".into(), json!("reject;")),
+                    ("disabled".into(), json!(true)),
+                ]),
+            });
+            let patch = PlannedStep::Rule(RuleStepPlan::Patch {
+                operation: Uuid::from_u128(42),
+                chain: "c".into(),
+                id: RuleId::Inserted(0),
+                set: Properties::from([("rule".into(), json!("x".repeat(available + extra)))]),
+            });
+            assert_eq!(preflight_rule_plans(&[insert, patch]).is_ok(), want_ok);
+        }
+    }
+
+    #[test]
+    fn mikrotik_filter_symbols_cannot_be_forward_unbound_duplicate_or_reused() {
+        let patch = || {
+            PlannedStep::Rule(RuleStepPlan::Patch {
+                operation: Uuid::from_u128(42),
+                chain: "c".into(),
+                id: RuleId::Inserted(0),
+                set: Properties::from([("disabled".into(), json!(false))]),
+            })
+        };
+        assert!(preflight_rule_plans(&[patch()]).is_err());
+        assert!(patch().materialize(&RuleBindings::new()).is_err());
+        let insert = || {
+            PlannedStep::Rule(RuleStepPlan::Insert {
+                operation: Uuid::from_u128(42),
+                chain: "c".into(),
+                slot: 0,
+                properties: Properties::from([
+                    ("chain".into(), json!("c")),
+                    ("rule".into(), json!("reject;")),
+                    ("disabled".into(), json!(true)),
+                ]),
+            })
+        };
+        assert!(preflight_rule_plans(&[insert(), insert()]).is_err());
+        let mut bindings = RuleBindings::new();
+        for id in ["0", "*", "*G", "*α", "*A\n"] {
+            assert!(bind_inserted_rule(&mut bindings, 0, id).is_err());
+        }
+        bind_inserted_rule(&mut bindings, 0, "*AB").unwrap();
+        assert!(bind_inserted_rule(&mut bindings, 0, "*AC").is_err());
+        assert!(bind_inserted_rule(&mut bindings, 1, "*AB").is_err());
+        assert_eq!(bindings.len(), 1);
+    }
+
+    #[test]
+    fn mikrotik_filter_preflights_future_source_editability_before_insert_or_patch() {
+        let s = documented_snapshot();
+        let change = NativeFilterChange {
+            chain: "blue-in".into(),
+            shared_acknowledged: true,
+            edits: vec![NativeRuleEdit::Insert {
+                before: Some("*5".into()),
+                rule: NativeRuleDraft {
+                    text: "x".repeat(32400),
+                    comment: String::new(),
+                    disabled: false,
+                },
+            }],
+        };
+        // The add can fit while a 64-byte-bound future full-property patch
+        // cannot. Do not let our next-step eligibility reject our own write.
+        assert!(preview_native(&s, NativeIntent::Filter(change), Uuid::from_u128(42)).is_err());
+    }
 
     fn sec003_draft() -> NativeConnectionDraft {
         NativeConnectionDraft {
@@ -1215,7 +1886,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(steps.len(), 1);
-        assert_eq!(steps[0].command.label, "neighbor.patch");
+        assert!(
+            matches!(&steps[0],PlannedStep::Ready(step) if step.command.label=="neighbor.patch")
+        );
         assert!(!format!("{:?}", steps[0]).contains(value));
         assert!(secret_verification_script(&preview).unwrap().is_none());
     }

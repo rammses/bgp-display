@@ -19,6 +19,7 @@ mod helpers;
 mod keys;
 mod mikrotik;
 mod mikrotik_editor;
+mod mikrotik_filters;
 mod peer_actions;
 mod policy_editors;
 mod projects;
@@ -34,6 +35,9 @@ pub use helpers::{apply_buf_to_draft, editor_field_value};
 pub use keys::handle_key;
 pub(crate) use mikrotik::native_stored_peer_routes;
 pub(crate) use mikrotik_editor::NATIVE_FIELDS;
+#[cfg(test)]
+pub(crate) use mikrotik_filters::tests::{filter_app as filter_test_app, key as filter_test_key};
+pub use mikrotik_filters::{NativeFilterEditorState, NativeFilterField};
 pub use types::*;
 
 // ─── App State ────────────────────────────────────────────────────────────────
@@ -59,6 +63,7 @@ pub struct App {
     pub native_view: Option<NativePresentation>,
     pub pending_native_view: Option<NativePresentation>,
     pub native_editor: Option<NativeEditorState>,
+    pub native_filter_editor: Option<NativeFilterEditorState>,
     native_receipts: HashMap<Uuid, crate::router::mikrotik::NativeReceipt>,
 
     // BGP data for the currently selected router
@@ -281,6 +286,7 @@ impl App {
             native_view: None,
             pending_native_view: None,
             native_editor: None,
+            native_filter_editor: None,
             native_receipts: HashMap::new(),
             current_summary: None,
             current_peers: vec![],

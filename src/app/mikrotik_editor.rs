@@ -170,9 +170,7 @@ impl App {
     pub(crate) fn open_native_config_target(&mut self) {
         match self.displayed_native_target().map(|(_, target)| target) {
             Some(NativeConfigTarget::Connection(_)) => self.open_native_edit(),
-            Some(NativeConfigTarget::Chain(_)) => self.set_status(
-                "Native filter editing is read-only until the guarded filter editor is available",
-            ),
+            Some(NativeConfigTarget::Chain(_)) => self.open_native_filter(),
             None => self.set_status(
                 "Select a native connection source row; text/IP is not an authorization target",
             ),
@@ -180,7 +178,7 @@ impl App {
     }
 
     fn open_native_mode(&mut self, mut mode: NativeEditorMode) {
-        if self.native_editor.is_some() {
+        if self.native_editor.is_some() || self.native_filter_editor.is_some() {
             return;
         }
         let opened = (|| -> Result<NativeEditorState> {
@@ -214,7 +212,7 @@ impl App {
                 match self.displayed_native_target().map(|(_, target)| target) {
                     Some(NativeConfigTarget::Connection(target)) => Some(target.clone()),
                     _ => anyhow::bail!(
-                        "select a native connection; filter editing remains read-only"
+                        "select a native connection; Config e on a chain opens native filter editing"
                     ),
                 }
             } else {
@@ -408,6 +406,13 @@ impl App {
                 && e.instance == receipt.instance
                 && e.registration == receipt.registration
         });
+        let matches_filter = self.native_filter_editor.as_ref().is_some_and(|e| {
+            e.stage == NativeEditorStage::Applying
+                && e.operation == receipt.operation
+                && e.router_id == receipt.router_id
+                && e.instance == receipt.instance
+                && e.registration == receipt.registration
+        });
         let same_context = self.all_routers.iter().any(|r| {
             r.id == receipt.router_id
                 && r.vendor == RouterVendor::MikroTik
@@ -416,6 +421,7 @@ impl App {
                 && r.ssh_port == receipt.registration.endpoint.ssh_port
                 && r.mikrotik_instance.as_deref() == Some(receipt.instance.as_str())
         }) && (matches_editor
+            || matches_filter
             || self
                 .native_cache
                 .get(&receipt.router_id)
@@ -457,7 +463,10 @@ impl App {
         if same_context {
             // Unlike configuration invalidation, result invalidation NEVER drops
             // another editor (even a new editor for this same router).
-            if self.native_editor.is_none() || matches_editor {
+            if (self.native_editor.is_none() && self.native_filter_editor.is_none())
+                || matches_editor
+                || matches_filter
+            {
                 self.invalidate_native_views(receipt.router_id);
             } else {
                 self.native_cache.remove(&receipt.router_id);
@@ -481,6 +490,23 @@ impl App {
             }
             self.set_status(format!(
                 "Native outcome: {:?}. Refresh/re-preview required; no replay.",
+                receipt.outcome
+            ));
+        }
+        if matches_filter {
+            if let Some(editor) = self.native_filter_editor.as_mut() {
+                editor.preview = None;
+                editor.stage = NativeEditorStage::Result;
+                editor.scroll = 0;
+                editor.receipt = Some(receipt.clone());
+                if !stored {
+                    editor.error = Some(
+                        "Receipt retained in memory; encrypted history persistence failed".into(),
+                    );
+                }
+            }
+            self.set_status(format!(
+                "Native filter outcome: {:?}. Refresh/re-preview required; no replay.",
                 receipt.outcome
             ));
         }

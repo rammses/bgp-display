@@ -1,7 +1,8 @@
 //! A receipt is evidence, never an executable replay plan.
 use super::*;
 use crate::router::commands::mikrotik::{
-    compile_native, native_equal, secret_verification, ApprovedChange,
+    bind_inserted_rule, compile_native, native_equal, secret_verification, ApprovedChange,
+    RuleBindings,
 };
 use crate::ssh::NativeExecutor;
 use anyhow::{ensure, Context, Result};
@@ -143,44 +144,53 @@ pub(crate) fn advance_expected(
         }
         ApprovedChange::RuleOrder {
             chain,
-            before: prior,
-            after: order,
+            id: target,
+            before: anchor,
+            order_before: prior,
+            order_after: order,
         } => {
             let rows = collection(before, "rules")?;
-            let selected = rows
-                .iter()
-                .filter(|r| r["chain"].as_str() == Some(chain.as_str()))
-                .map(id)
-                .collect::<Result<Vec<_>>>()?;
+            let observed = rows.iter().map(id).collect::<Result<Vec<_>>>()?;
             ensure!(
-                selected
+                observed
                     .iter()
                     .copied()
-                    .eq(prior.iter().map(String::as_str)),
+                    .eq(prior.iter().map(String::as_str))
+                    && observed.iter().collect::<BTreeSet<_>>().len() == observed.len(),
                 "rule order before mismatch"
             );
-            ensure!(
-                prior.len() == order.len()
-                    && prior.iter().collect::<BTreeSet<_>>()
-                        == order.iter().collect::<BTreeSet<_>>()
-                    && order.iter().collect::<BTreeSet<_>>().len() == order.len(),
-                "rule order changed membership"
-            );
-            let mut next = order.iter();
-            let reordered = rows
+            for wanted in std::iter::once(target).chain(anchor.iter()) {
+                ensure!(
+                    rows.iter().any(|r| id(r).ok() == Some(wanted.as_str())
+                        && r["chain"].as_str() == Some(chain.as_str())),
+                    "move target or anchor is missing or foreign"
+                );
+            }
+            ensure!(anchor.as_ref() != Some(target), "self-anchored rule move");
+            let mut reordered = rows.clone();
+            let from = reordered
                 .iter()
-                .map(|r| {
-                    if r["chain"].as_str() == Some(chain.as_str()) {
-                        let wanted = next.next().context("invalid rule order")?;
-                        rows.iter()
-                            .find(|r| id(r).ok() == Some(wanted.as_str()))
-                            .cloned()
-                            .context("ordered rule missing")
-                    } else {
-                        Ok(r.clone())
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?;
+                .position(|r| id(r).ok() == Some(target.as_str()))
+                .context("move target missing")?;
+            let moved = reordered.remove(from);
+            let to = match anchor {
+                Some(anchor) => reordered
+                    .iter()
+                    .position(|r| id(r).ok() == Some(anchor.as_str()))
+                    .context("move anchor missing")?,
+                None => reordered.len(),
+            };
+            reordered.insert(to, moved);
+            ensure!(
+                reordered
+                    .iter()
+                    .map(id)
+                    .collect::<Result<Vec<_>>>()?
+                    .iter()
+                    .copied()
+                    .eq(order.iter().map(String::as_str)),
+                "invalid approved global move"
+            );
             expected.0.insert("rules".into(), Value::Array(reordered));
         }
     }
@@ -202,8 +212,49 @@ enum StepResult {
     Unknown(String),
 }
 
+fn filter_action_evidence(change: &NativeFilterChange) -> String {
+    let safe_id = |id: &str| {
+        if super::filter::observed_rule_id(id).is_ok() {
+            serde_json::json!(id).to_string()
+        } else {
+            "<invalid ID>".into()
+        }
+    };
+    let anchor = |before: &Option<String>| {
+        before
+            .as_deref()
+            .map(&safe_id)
+            .unwrap_or_else(|| "end".into())
+    };
+    change
+        .edits
+        .iter()
+        .map(|edit| match edit {
+            NativeRuleEdit::Insert { before, rule } => format!(
+                "Insert disabled first, then verified placement before={}, requested disabled={}",
+                anchor(before),
+                rule.disabled
+            ),
+            NativeRuleEdit::Update { id, rule } => format!(
+                "Update rule id={} (text/comment properties; disabled={})",
+                safe_id(id),
+                rule.disabled
+            ),
+            NativeRuleEdit::Delete { id } => format!("Delete rule id={}", safe_id(id)),
+            NativeRuleEdit::Move { id, before } => {
+                format!("Move rule id={} before={}", safe_id(id), anchor(before))
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 fn safe_intent_evidence(preview: &NativePreview) -> String {
     let target = match &preview.intent {
+        NativeIntent::Filter(change) => format!(
+            "filter chain={}",
+            serde_json::json!(presentation_text(&change.chain))
+        ),
         NativeIntent::Create(draft) => format!(
             "new connection name={} (ID unavailable before creation)",
             serde_json::json!(presentation_text(&draft.name))
@@ -219,6 +270,10 @@ fn safe_intent_evidence(preview: &NativePreview) -> String {
         }
     };
     let (action, authentication) = match &preview.intent {
+        NativeIntent::Filter(change) => (
+            filter_action_evidence(change),
+            "not applicable (native filter)",
+        ),
         NativeIntent::Create(draft) => (
             "Create (disabled=true, both deny-all bindings)".to_owned(),
             match &draft.secret {
@@ -289,6 +344,7 @@ pub(crate) fn rejected_receipt(preview: &NativePreview) -> NativeReceipt {
         NativeIntent::Patch { .. } => &["Patch connection properties"],
         NativeIntent::SetDisabled { .. } => &["Set administrative disabled state"],
         NativeIntent::Delete(_) => &["Delete exact connection only"],
+        NativeIntent::Filter(_) => &["Native filter edits (not launched)"],
     };
     NativeReceipt {
         router_id: preview.router_id,
@@ -327,11 +383,16 @@ fn operation_target(preview: &NativePreview) -> Option<&NativeConnectionRef> {
         NativeIntent::Patch { target, .. }
         | NativeIntent::SetDisabled { target, .. }
         | NativeIntent::Delete(target) => Some(target),
-        NativeIntent::Create(_) => None,
+        NativeIntent::Create(_) | NativeIntent::Filter(_) => None,
     }
 }
 
-fn verify_marker(data: &Value, approved: &ApprovedChange, after: &ConfigGuard) -> Result<String> {
+fn verify_marker(
+    data: &Value,
+    approved: &ApprovedChange,
+    before: &ConfigGuard,
+    after: &ConfigGuard,
+) -> Result<String> {
     ensure!(
         data.as_object().is_some_and(|o| o.len() == 2) && data["applied"] == Value::Bool(true),
         "invalid mutation postcondition marker"
@@ -343,20 +404,28 @@ fn verify_marker(data: &Value, approved: &ApprovedChange, after: &ConfigGuard) -
             identity,
             ..
         } => {
+            let old_ids = collection(before, name)?
+                .iter()
+                .map(id)
+                .collect::<Result<BTreeSet<_>>>()?;
+            let inserted = collection(after, name)?
+                .iter()
+                .filter(|row| id(row).is_ok_and(|value| !old_ids.contains(value)))
+                .collect::<Vec<_>>();
+            // Matching chain/properties do not prove creation. The marker must
+            // name the one new row relative to this step's expected-before guard.
             ensure!(
-                collection(after, name)?
-                    .iter()
-                    .filter(|row| id(row).ok() == Some(marker) && matches_properties(row, identity))
-                    .count()
-                    == 1,
+                inserted.len() == 1
+                    && id(inserted[0])? == marker
+                    && matches_properties(inserted[0], identity),
                 "created marker identity mismatch"
             );
         }
         ApprovedChange::Patch { id, .. } | ApprovedChange::Remove { id, .. } => {
             ensure!(marker == id, "mutation marker identity mismatch")
         }
-        ApprovedChange::RuleOrder { .. } => {
-            anyhow::bail!("rule order has no neighbor result marker")
+        ApprovedChange::RuleOrder { id, .. } => {
+            ensure!(marker == id, "move marker identity mismatch")
         }
     }
     Ok(marker.to_owned())
@@ -411,8 +480,9 @@ async fn run<E: NativeExecutor>(
         preview.generation,
     )?;
     let mut secret_check = secret_verification(preview)?; // budget ALL bytes before FIRST write
-    receipt.unapplied_steps = steps.iter().map(|s| s.safe_label.clone()).collect();
-    for (index, step) in steps.into_iter().enumerate() {
+    receipt.unapplied_steps = steps.iter().map(|s| s.safe_label().to_owned()).collect();
+    let mut bindings = RuleBindings::new();
+    for (index, plan) in steps.into_iter().enumerate() {
         if index > 0 {
             let guard = super::read::fetch_configuration(
                 io,
@@ -445,6 +515,22 @@ async fn run<E: NativeExecutor>(
                 return Ok(());
             }
         }
+        if let NativeIntent::Filter(change) = &preview.intent {
+            if super::filter::filter_eligibility(&fresh, &change.chain).is_err() {
+                let label = receipt.unapplied_steps.remove(0);
+                partial_or_rejected(receipt, label, &evidence);
+                return Ok(());
+            }
+        }
+        let insertion_slot = plan.insertion_slot();
+        let step = match plan.materialize(&bindings) {
+            Ok(step) => step,
+            Err(_) => {
+                let label = receipt.unapplied_steps.remove(0);
+                partial_or_rejected(receipt, label, &evidence);
+                return Ok(());
+            }
+        };
         receipt.unapplied_steps.remove(0);
         let result = match io.exec(step.command).await {
             Err(error) if !error.started => StepResult::ConfirmedFailure(step.safe_label),
@@ -471,8 +557,17 @@ async fn run<E: NativeExecutor>(
                     Ok(snapshot) => {
                         let proof = (|| -> Result<(ConfigGuard, String)> {
                             let after = config_guard(&snapshot.inventory, &preview.instance)?;
-                            let marker = verify_marker(&data, &step.approved, &after)?;
+                            let marker = verify_marker(&data, &step.approved, &expected, &after)?;
                             advance_expected(&expected, &after, &step.approved)?;
+                            if let Some(slot) = insertion_slot {
+                                ensure!(
+                                    matches!(&step.approved,ApprovedChange::Insert{collection,..} if collection=="rules"),
+                                    "invalid rule slot proof"
+                                );
+                                // This is the only binding point: marker AND unique
+                                // exact independent Insert proof have both succeeded.
+                                bind_inserted_rule(&mut bindings, slot, &marker)?;
+                            }
                             // RouterOS IDs are menu-local. A new filter rule
                             // may share its ID with a foreign connection; only
                             // connection changes may select a connection here.
@@ -499,6 +594,12 @@ async fn run<E: NativeExecutor>(
                                 {
                                     format!(
                                         "{}; observed connection id={}",
+                                        step.safe_label,
+                                        serde_json::json!(presentation_text(&marker))
+                                    )
+                                } else if insertion_slot.is_some() {
+                                    format!(
+                                        "{}; observed rule id={}",
                                         step.safe_label,
                                         serde_json::json!(presentation_text(&marker))
                                     )
@@ -622,6 +723,41 @@ mod tests {
     }
 
     #[test]
+    fn mikrotik_filter_fix1_shared_connection_insert_marker_must_name_new_row() {
+        let mut inv = documented_inventory();
+        let before = config_guard(&inv, "blue").unwrap();
+        let mut created = inv.connections[0].clone();
+        created.id = "*AB".into();
+        created.props.insert("name".into(), json!("created-peer"));
+        created.props.insert("disabled".into(), json!(true));
+        let change = ApprovedChange::Insert {
+            collection: "connections".into(),
+            // Exercise the shared insert verifier independently of name uniqueness.
+            // Both old and new rows match this identity; the delta still proves
+            // one exact new connection and all old rows unchanged.
+            identity: Properties::from([("instance".into(), json!("blue"))]),
+            required: created.props.clone(),
+        };
+        inv.connections.push(created);
+        let after = config_guard(&inv, "blue").unwrap();
+        assert_eq!(advance_expected(&before, &after, &change).unwrap(), after);
+        assert!(
+            verify_marker(&json!({"id":"*2","applied":true}), &change, &before, &after).is_err(),
+            "an existing matching connection must not masquerade as the created connection"
+        );
+        assert_eq!(
+            verify_marker(
+                &json!({"id":"*AB","applied":true}),
+                &change,
+                &before,
+                &after
+            )
+            .unwrap(),
+            "*AB"
+        );
+    }
+
+    #[test]
     fn mikrotik_apply_advance_ruleorder_cannot_accept_other_chain_or_properties() {
         let mut inv = documented_inventory();
         inv.rules.push(record(
@@ -630,13 +766,146 @@ mod tests {
         let before = config_guard(&inv, "blue").unwrap();
         let change = ApprovedChange::RuleOrder {
             chain: "blue-in".into(),
-            before: vec!["*5".into(), "*7".into()],
-            after: vec!["*7".into(), "*5".into()],
+            id: "*7".into(),
+            before: Some("*5".into()),
+            order_before: vec!["*5".into(), "*6".into(), "*7".into()],
+            order_after: vec!["*7".into(), "*5".into(), "*6".into()],
         };
-        inv.rules.swap(0, 2);
+        let moved = inv.rules.remove(2);
+        inv.rules.insert(0, moved);
         let after = config_guard(&inv, "blue").unwrap();
         assert!(advance_expected(&before, &after, &change).is_ok());
-        inv.rules[1].props.insert("disabled".into(), json!(true));
+        inv.rules
+            .iter_mut()
+            .find(|r| r.id == "*6")
+            .unwrap()
+            .props
+            .insert("disabled".into(), json!(true));
         assert!(advance_expected(&before, &config_guard(&inv, "blue").unwrap(), &change).is_err());
+    }
+
+    #[test]
+    fn mikrotik_filter_rf3_native_move_preserves_other_chain_relative_order() {
+        // Synthetic documentation-derived global rule list, not a device capture.
+        // A real move-before removes *7 from its old position and inserts it
+        // before *5: [*5, *6, *7] -> [*7, *5, *6], not [*7, *6, *5].
+        let mut inv = documented_inventory();
+        inv.rules.push(record(json!({
+            ".id":"*7", "chain":"blue-in", "rule":"accept;", "disabled":false,
+            "comment":"α\n\"\\$", "vendor.future":{"opaque":[false,"0007"]}
+        })));
+        let before = config_guard(&inv, "blue").unwrap();
+        let approved = ApprovedChange::RuleOrder {
+            chain: "blue-in".into(),
+            id: "*7".into(),
+            before: Some("*5".into()),
+            order_before: vec!["*5".into(), "*6".into(), "*7".into()],
+            order_after: vec!["*7".into(), "*5".into(), "*6".into()],
+        };
+        let moved = inv.rules.remove(2);
+        inv.rules.insert(0, moved);
+        assert_eq!(
+            inv.rules.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(),
+            vec!["*7", "*5", "*6"]
+        );
+        let after = config_guard(&inv, "blue").unwrap();
+        let advanced = advance_expected(&before, &after, &approved);
+        assert!(
+            advanced.is_ok(),
+            "approved native move-before must accept its exact global-list effect: {advanced:?}"
+        );
+    }
+
+    #[test]
+    fn mikrotik_filter_global_moves_distinguish_anchor_end_and_untouched_interleavings() {
+        let mut inv = documented_inventory();
+        inv.rules.extend([
+            record(json!({".id":"*7","chain":"blue-in","rule":"accept;","disabled":false,"comment":"α\n\"\\$","unknown":[null,"0007"]})),
+            record(json!({".id":"*8","chain":"blue-out","rule":"reject;","disabled":false})),
+            record(json!({".id":"*9","chain":"green","rule":"reject;","disabled":false})),
+        ]);
+        let before = config_guard(&inv, "blue").unwrap();
+        for (target, anchor, expected) in [
+            ("*7", Some("*5"), vec!["*7", "*5", "*6", "*8", "*9"]),
+            ("*5", None, vec!["*6", "*7", "*8", "*9", "*5"]),
+        ] {
+            let approved = ApprovedChange::RuleOrder {
+                chain: "blue-in".into(),
+                id: target.into(),
+                before: anchor.map(str::to_owned),
+                order_before: vec![
+                    "*5".into(),
+                    "*6".into(),
+                    "*7".into(),
+                    "*8".into(),
+                    "*9".into(),
+                ],
+                order_after: expected.iter().map(|s| (*s).into()).collect(),
+            };
+            let mut after = inv.clone();
+            after.rules = expected
+                .iter()
+                .map(|id| inv.rules.iter().find(|r| r.id == *id).unwrap().clone())
+                .collect();
+            let guard = config_guard(&after, "blue").unwrap();
+            assert_eq!(advance_expected(&before, &guard, &approved).unwrap(), guard);
+            assert!(verify_marker(
+                &json!({"id":target,"applied":true}),
+                &approved,
+                &before,
+                &guard
+            )
+            .is_ok());
+            assert!(verify_marker(
+                &json!({"id":"*BAD","applied":true}),
+                &approved,
+                &before,
+                &guard
+            )
+            .is_err());
+            after.rules.swap(2, 3); // even unaffected chains cannot be rearranged
+            assert!(
+                advance_expected(&before, &config_guard(&after, "blue").unwrap(), &approved)
+                    .is_err()
+            );
+            after.rules = expected
+                .iter()
+                .map(|id| inv.rules.iter().find(|r| r.id == *id).unwrap().clone())
+                .collect();
+            after.rules[0]
+                .props
+                .insert("comment".into(), json!("external"));
+            assert!(
+                advance_expected(&before, &config_guard(&after, "blue").unwrap(), &approved)
+                    .is_err()
+            );
+        }
+        let mut slot_swap = inv.clone();
+        slot_swap.rules.swap(0, 2);
+        let approved = ApprovedChange::RuleOrder {
+            chain: "blue-in".into(),
+            id: "*7".into(),
+            before: Some("*5".into()),
+            order_before: vec![
+                "*5".into(),
+                "*6".into(),
+                "*7".into(),
+                "*8".into(),
+                "*9".into(),
+            ],
+            order_after: vec![
+                "*7".into(),
+                "*5".into(),
+                "*6".into(),
+                "*8".into(),
+                "*9".into(),
+            ],
+        };
+        assert!(advance_expected(
+            &before,
+            &config_guard(&slot_swap, "blue").unwrap(),
+            &approved
+        )
+        .is_err());
     }
 }

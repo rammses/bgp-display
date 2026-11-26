@@ -109,7 +109,39 @@ pub struct NativePatch {
     pub secret: SecretChange,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeRuleDraft {
+    pub text: String,
+    pub comment: String,
+    pub disabled: bool,
+}
+#[derive(Clone, PartialEq, Eq)]
+pub enum NativeRuleEdit {
+    Insert {
+        before: Option<String>,
+        rule: NativeRuleDraft,
+    },
+    Update {
+        id: String,
+        rule: NativeRuleDraft,
+    },
+    Delete {
+        id: String,
+    },
+    Move {
+        id: String,
+        before: Option<String>,
+    },
+}
+#[derive(Clone, PartialEq, Eq)]
+pub struct NativeFilterChange {
+    pub chain: String,
+    pub edits: Vec<NativeRuleEdit>,
+    pub shared_acknowledged: bool,
+}
+
 pub enum NativeIntent {
+    Filter(NativeFilterChange),
     Create(NativeConnectionDraft),
     Patch {
         target: NativeConnectionRef,
@@ -144,6 +176,9 @@ macro_rules! redacted_debug {
     })+ };
 }
 redacted_debug!(
+    NativeRuleDraft,
+    NativeRuleEdit,
+    NativeFilterChange,
     SecretChange,
     NativeConnectionDraft,
     NativePatch,
